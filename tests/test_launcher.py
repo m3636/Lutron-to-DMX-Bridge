@@ -303,9 +303,17 @@ def window(monkeypatch):
         w.close()
     except tk.TclError:
         pass  # already closed by the test
+    # Tcl aborts the whole process ("Tcl_AsyncDelete: async handler deleted by the wrong thread") if a Tk
+    # root is garbage-collected in a thread other than the one that made it, and the cyclic garbage of a
+    # window is otherwise freed by whichever thread next triggers a collection (once, a TestClient's
+    # worker thread in a later test_web test: "Fatal Python error: Aborted" in CI).  The fixture's own
+    # reference (pytest keeps the value until the fixture has finished) would keep the window alive through
+    # a collection here, so empty it first, then collect on this thread.
     import gc
 
-    gc.collect()  # release Tk objects here, not later in whichever thread triggers a collection
+    w.__dict__.clear()
+    del w
+    gc.collect()
 
 
 def pump(window, seconds=0.5):
