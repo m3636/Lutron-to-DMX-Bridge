@@ -1,6 +1,6 @@
-"""Generate the QLC+ test workspace (Lutron-DMX-Test.qxw) and the matching app config.
+"""Generate the QLC+ test workspace (Lutron-To-DMX-Bridge-Test.qxw) and the matching app config.
 
-The show is built from the simulator's inventory (lutron_dmx/drivers/sample_data/simulator_inventory.json)
+The show is built from the simulator's inventory (lutron_to_dmx_bridge/drivers/sample_data/simulator_inventory.json)
 so QLC+ and the app agree on the patch: every Lutron zone is one 1-channel dimmer, patched on
 consecutive DMX addresses 1..N in inventory order, which is exactly what the app's
 "Re-assign all" button does with the "intensity" parameter.
@@ -9,7 +9,7 @@ consecutive DMX addresses 1..N in inventory order, which is exactly what the app
     python qlcplus/generate_show.py --interface 192.168.1.20     # QLC+ output on this NIC, broadcast
     python qlcplus/generate_show.py --interface 192.168.1.20 --target 192.168.1.50   # unicast to the app's computer
 
-Writes Lutron-DMX-Test.qxw and app-home/config.json next to this script (loopback), or into
+Writes Lutron-To-DMX-Bridge-Test.qxw and app-home/config.json next to this script (loopback), or into
 qlcplus/custom/ when --interface/--target are given, so the committed loopback files stay untouched.
 
 To build a show for your own installation, give it the RadioRA 2 export (the Main Repeater serves it at
@@ -20,7 +20,7 @@ http://<repeater-ip>/DbXmlInfo.xml):
 
 That patches one 1-channel fixture per output on the DMX addresses the app's "Re-assign all" button gives
 (areas in export order, outputs in export order within an area), with a fader or button per output grouped by
-room. It writes Lutron-DMX-Show.qxw and patch-list.csv into qlcplus/custom/ (git-ignored: the export holds
+room. It writes Lutron-To-DMX-Bridge-Show.qxw and patch-list.csv into qlcplus/custom/ (git-ignored: the export holds
 your room names and installer details, so keep both out of version control).
 """
 
@@ -34,7 +34,7 @@ from pathlib import Path
 from xml.sax.saxutils import escape, quoteattr
 
 HERE = Path(__file__).resolve().parent
-INVENTORY = HERE.parent / "lutron_dmx" / "drivers" / "sample_data" / "simulator_inventory.json"
+INVENTORY = HERE.parent / "lutron_to_dmx_bridge" / "drivers" / "sample_data" / "simulator_inventory.json"
 QLC_VERSION = "4.12.7"
 NO_FUNCTION = 4294967295  # QLC+ "invalid function id"
 
@@ -80,7 +80,7 @@ def load_zones() -> list[Zone]:
 
 def load_zones_from_db_xml(path: Path) -> list[Zone]:
     """Zones of a real RadioRA 2 export, parsed by the same code the app uses so both agree on ids and order."""
-    from lutron_dmx.drivers.ra2 import parse_db_xml
+    from lutron_to_dmx_bridge.drivers.ra2 import parse_db_xml
 
     inv = parse_db_xml(Path(path).read_bytes())
     return patch_order(
@@ -497,11 +497,11 @@ def build_workspace(zones: list[Zone], *, interface: str, target: str | None, au
     out = ["<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE Workspace>\n"
            '<Workspace xmlns="http://www.qlcplus.org/Workspace" CurrentWindow="VirtualConsole">\n'
            " <Creator>\n  <Name>Q Light Controller Plus</Name>\n"
-           f"  <Version>{QLC_VERSION}</Version>\n  <Author>lutron-dmx</Author>\n </Creator>\n"]
+           f"  <Version>{QLC_VERSION}</Version>\n  <Author>lutron-to-dmx-bridge</Author>\n </Creator>\n"]
     autostart_attr = f' Autostart="{autostart}"' if autostart is not None else ""
     out.append(f" <Engine{autostart_attr}>\n")
     out.append("  <InputOutputMap>\n"
-               '   <Universe Name="Lutron DMX (Art-Net universe 0)" ID="0">\n'
+               '   <Universe Name="Lutron To DMX Bridge (Art-Net universe 0)" ID="0">\n'
                f'    <Output Plugin="ArtNet" UID="{interface}" Line="0">{params}</Output>\n'
                "   </Universe>\n  </InputOutputMap>\n")
     for z in zones:
@@ -519,7 +519,7 @@ def build_workspace(zones: list[Zone], *, interface: str, target: str | None, au
 
 
 def build_app_config(zones: list[Zone], *, loopback: bool) -> dict:
-    from lutron_dmx.config import AppConfig, DmxConfig, DmxFixtureMapping
+    from lutron_to_dmx_bridge.config import AppConfig, DmxConfig, DmxFixtureMapping
 
     cfg = AppConfig(dmx=DmxConfig(
         enabled=True, source="artnet", universe=0,
@@ -533,7 +533,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--interface", default="127.0.0.1",
                     help="IP of the QLC+ computer's network interface used for Art-Net output (default: loopback)")
-    ap.add_argument("--target", help="send unicast to this IP (the computer running lutron-dmx) instead of broadcast")
+    ap.add_argument("--target", help="send unicast to this IP (the computer running lutron-to-dmx-bridge) instead of broadcast")
     ap.add_argument("--db-xml", type=Path,
                     help="build the show from this RadioRA 2 DbXmlInfo.xml export instead of the simulator inventory")
     ap.add_argument("--room", help="with --db-xml: only this room (e.g. Kitchen), patched from DMX 1")
@@ -549,7 +549,7 @@ def main() -> None:
         if args.room:
             zones = restrict_to_room(zones, args.room)
             suffix = "-" + re.sub(r"[^A-Za-z0-9]+", "-", zones[0].area.split(" ", 1)[-1]).strip("-")
-        qxw = out_dir / f"Lutron-DMX-Show{suffix}.qxw"
+        qxw = out_dir / f"Lutron-To-DMX-Bridge-Show{suffix}.qxw"
         qxw.write_text(
             build_workspace(zones, interface=args.interface, target=args.target, autostart=args.autostart,
                             site=True),
@@ -566,7 +566,7 @@ def main() -> None:
                   "(params: intensity, start 1) to get the same patch.")
         return
     zones = load_zones()
-    qxw = out_dir / "Lutron-DMX-Test.qxw"
+    qxw = out_dir / "Lutron-To-DMX-Bridge-Test.qxw"
     qxw.write_text(
         build_workspace(zones, interface=args.interface, target=args.target, autostart=args.autostart),
         encoding="utf-8", newline="\n")

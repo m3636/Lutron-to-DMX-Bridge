@@ -4,13 +4,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from lutron_dmx.config import DriverConfig
-from lutron_dmx.drivers import DriverError, create_driver
-from lutron_dmx.drivers import leap
-from lutron_dmx.drivers.leap import (LeapDriver, build_inventory, cert_paths, device_level,
+from lutron_to_dmx_bridge.config import DriverConfig
+from lutron_to_dmx_bridge.drivers import DriverError, create_driver
+from lutron_to_dmx_bridge.drivers import leap
+from lutron_to_dmx_bridge.drivers.leap import (LeapDriver, build_inventory, cert_paths, device_level,
                                      fan_speed_to_level, leap_type_to_zone_type,
                                      level_to_fan_speed, parse_timeclock_events)
-from lutron_dmx.models import ZoneType
+from lutron_to_dmx_bridge.models import ZoneType
 
 
 @pytest.mark.parametrize("t,zt", [

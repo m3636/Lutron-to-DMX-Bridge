@@ -4,10 +4,10 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from lutron_dmx.config import AppConfig, DriverConfig
-from lutron_dmx.controller import Controller
-from lutron_dmx.web.app import create_app
-from lutron_dmx.web.guard import host_name, is_loopback_bind
+from lutron_to_dmx_bridge.config import AppConfig, DriverConfig
+from lutron_to_dmx_bridge.controller import Controller
+from lutron_to_dmx_bridge.web.app import create_app
+from lutron_to_dmx_bridge.web.guard import host_name, is_loopback_bind
 
 
 def make_client(bind_host=None):

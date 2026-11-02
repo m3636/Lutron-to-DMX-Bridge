@@ -14,13 +14,13 @@ import time
 
 import pytest
 
-from lutron_dmx import launcher
-from lutron_dmx.config import AppConfig
+from lutron_to_dmx_bridge import launcher
+from lutron_to_dmx_bridge.config import AppConfig
 
 
 @pytest.fixture(autouse=True)
 def home(tmp_path, monkeypatch):
-    monkeypatch.setenv("LUTRON_DMX_HOME", str(tmp_path))
+    monkeypatch.setenv("LUTRON_TO_DMX_BRIDGE_HOME", str(tmp_path))
     return tmp_path
 
 
@@ -61,7 +61,7 @@ def running_server():
 
 @pytest.fixture
 def other_server():
-    """Something on a port that is not Lutron DMX (answers HTTP, but not our status JSON)."""
+    """Something on a port that is not Lutron To DMX Bridge (answers HTTP, but not our status JSON)."""
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
@@ -110,7 +110,7 @@ def test_server_thread_reports_startup_failure(monkeypatch):
     def boom(*a, **k):
         raise RuntimeError("kaboom")
 
-    monkeypatch.setattr("lutron_dmx.web.app.create_app", boom)
+    monkeypatch.setattr("lutron_to_dmx_bridge.web.app.create_app", boom)
     thread = launcher.ServerThread(AppConfig(), launcher.bind_socket("127.0.0.1", 0))
     thread.start()
     assert thread.stopped.wait(10)
@@ -219,11 +219,11 @@ def test_browse_host():
 def test_log_file_rotates_in_app_home_and_window_queue_fills(home, root_logger):
     handlers, qh = launcher.setup_logging(window=True)
     try:
-        logging.getLogger("lutron_dmx.test").info("hello from the test")
-        logging.getLogger("lutron_dmx.test").debug("not at info level")
+        logging.getLogger("lutron_to_dmx_bridge.test").info("hello from the test")
+        logging.getLogger("lutron_to_dmx_bridge.test").debug("not at info level")
     finally:
         launcher.teardown_logging(handlers)
-    text = (home / "logs" / "lutron-dmx.log").read_text(encoding="utf-8")
+    text = (home / "logs" / "lutron-to-dmx-bridge.log").read_text(encoding="utf-8")
     assert "hello from the test" in text and "not at info level" not in text
     levelno, line = qh.queue.get_nowait()
     assert levelno == logging.INFO and "hello from the test" in line
@@ -237,7 +237,7 @@ def test_logging_survives_missing_stderr(home, root_logger, monkeypatch):
         logging.getLogger("x").warning("still fine")
     finally:
         launcher.teardown_logging(handlers)
-    assert "still fine" in (home / "logs" / "lutron-dmx.log").read_text(encoding="utf-8")
+    assert "still fine" in (home / "logs" / "lutron-to-dmx-bridge.log").read_text(encoding="utf-8")
 
 
 # -- self check (what CI runs against the packaged app) ------------------------
@@ -250,7 +250,7 @@ def test_self_check_passes(tmp_path, monkeypatch, capsys):
         failures = [ln for ln in failures if "tkinter" not in ln]
     assert not failures, report
     assert code == 0 or not launcher.tk_available()
-    assert os.environ["LUTRON_DMX_HOME"] == str(tmp_path)  # restored afterwards
+    assert os.environ["LUTRON_TO_DMX_BRIDGE_HOME"] == str(tmp_path)  # restored afterwards
 
 
 def test_cli_subcommands_pass_through(monkeypatch, capsys):
@@ -285,9 +285,9 @@ def window(monkeypatch):
     tk = pytest.importorskip("tkinter")
     # On macOS, Tk aborts the whole process when there is no window server (e.g. a launchd runner),
     # so only try there when asked to.
-    if sys.platform == "darwin" and not os.environ.get("LUTRON_DMX_TK_TESTS"):
-        pytest.skip("set LUTRON_DMX_TK_TESTS=1 to run the Tk window test on macOS")
-    from lutron_dmx.logwindow import LogWindow
+    if sys.platform == "darwin" and not os.environ.get("LUTRON_TO_DMX_BRIDGE_TK_TESTS"):
+        pytest.skip("set LUTRON_TO_DMX_BRIDGE_TK_TESTS=1 to run the Tk window test on macOS")
+    from lutron_to_dmx_bridge.logwindow import LogWindow
 
     stub = StubThread()
     handler = launcher.QueueLogHandler()
@@ -320,7 +320,7 @@ def test_window_end_to_end(window, monkeypatch, root_logger):
 
     w, stub, handler = window, window.stub, window.handler
     opened = []
-    monkeypatch.setattr("lutron_dmx.logwindow.open_browser", opened.append)
+    monkeypatch.setattr("lutron_to_dmx_bridge.logwindow.open_browser", opened.append)
 
     # log lines and status; debug lines are hidden until asked for
     handler.queue.put((logging.INFO, "first line"))
@@ -352,7 +352,7 @@ def test_window_end_to_end(window, monkeypatch, root_logger):
     # old lines are trimmed
     w.clear()
     assert w._text() == ""
-    monkeypatch.setattr("lutron_dmx.logwindow.MAX_LINES", 50)
+    monkeypatch.setattr("lutron_to_dmx_bridge.logwindow.MAX_LINES", 50)
     for i in range(200):
         handler.queue.put((logging.INFO, f"line {i}"))
     pump(w)

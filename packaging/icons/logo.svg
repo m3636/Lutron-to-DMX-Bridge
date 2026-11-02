@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>Lutron To DMX Bridge</title>
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="rgb(36, 49, 90)"/><stop offset="1" stop-color="rgb(11, 16, 32)"/>
+    </linearGradient>
+    <linearGradient id="bar" gradientUnits="userSpaceOnUse" x1="0" y1="276" x2="0" y2="736">
+      <stop offset="0" stop-color="rgb(255, 209, 102)"/><stop offset="1" stop-color="rgb(240, 138, 36)"/>
+    </linearGradient>
+  </defs>
+  <rect x="40" y="40" width="944" height="944" rx="210" fill="url(#tile)"/>
+  <g fill="url(#bar)">
+    <rect x="168" y="606" width="64" height="130" rx="32.0"/>
+    <rect x="272" y="422.667" width="64" height="313.333" rx="32.0"/>
+    <rect x="376" y="312.667" width="64" height="423.333" rx="32.0"/>
+    <rect x="480" y="276" width="64" height="460" rx="32.0"/>
+    <rect x="584" y="312.667" width="64" height="423.333" rx="32.0"/>
+    <rect x="688" y="422.667" width="64" height="313.333" rx="32.0"/>
+    <rect x="792" y="606" width="64" height="130" rx="32.0"/>
+  </g>
+  <path d="M200 568 Q512 -92 824 568" fill="none" stroke="rgb(232, 236, 245)" stroke-width="16" stroke-linecap="round"/>
+  <rect x="150" y="722" width="724" height="60" rx="30" fill="rgb(232, 236, 245)"/>
+</svg>

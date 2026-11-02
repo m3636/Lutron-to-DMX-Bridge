@@ -6,7 +6,7 @@ import pytest
 @pytest.fixture(autouse=True)
 def no_update_checks(monkeypatch):
     """The app asks GitHub for new releases on its own; tests must never do that."""
-    monkeypatch.setenv("LUTRON_DMX_NO_UPDATE_CHECK", "1")
+    monkeypatch.setenv("LUTRON_TO_DMX_BRIDGE_NO_UPDATE_CHECK", "1")
 
 
 @pytest.fixture(autouse=True)

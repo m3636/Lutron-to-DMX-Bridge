@@ -1,4 +1,4 @@
-"""Bump the app version (the single source is __version__ in lutron_dmx/__init__.py).
+"""Bump the app version (the single source is __version__ in lutron_to_dmx_bridge/__init__.py).
 
     python tools/bump_version.py patch|minor|major|X.Y.Z
 
@@ -10,7 +10,7 @@ import re
 import sys
 from pathlib import Path
 
-INIT = Path(__file__).resolve().parent.parent / "lutron_dmx" / "__init__.py"
+INIT = Path(__file__).resolve().parent.parent / "lutron_to_dmx_bridge" / "__init__.py"
 PATTERN = re.compile(r'^__version__ = "(\d+)\.(\d+)\.(\d+)"$', re.M)
 
 

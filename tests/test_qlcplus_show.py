@@ -9,9 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from lutron_dmx.config import AppConfig
-from lutron_dmx.dmx.artnet import broadcast_bind_host
-from lutron_dmx.dmx.engine import auto_assign, validate_mappings
+from lutron_to_dmx_bridge.config import AppConfig
+from lutron_to_dmx_bridge.dmx.artnet import broadcast_bind_host
+from lutron_to_dmx_bridge.dmx.engine import auto_assign, validate_mappings
 
 QLC_DIR = Path(__file__).resolve().parent.parent / "qlcplus"
 NS = "{http://www.qlcplus.org/Workspace}"
@@ -28,14 +28,14 @@ def gen():
 
 @pytest.fixture(scope="module")
 def workspace():
-    return ET.parse(QLC_DIR / "Lutron-DMX-Test.qxw").getroot()
+    return ET.parse(QLC_DIR / "Lutron-To-DMX-Bridge-Test.qxw").getroot()
 
 
 def test_committed_files_are_current(gen):
     """Regenerating gives the committed files, so nobody edits one without the generator."""
     zones = gen.load_zones()
     assert gen.build_workspace(zones, interface="127.0.0.1", target=None) == \
-        (QLC_DIR / "Lutron-DMX-Test.qxw").read_text(encoding="utf-8")
+        (QLC_DIR / "Lutron-To-DMX-Bridge-Test.qxw").read_text(encoding="utf-8")
     assert json.loads((QLC_DIR / "app-home" / "config.json").read_text(encoding="utf-8")) == \
         gen.build_app_config(zones, loopback=True)
 
@@ -104,7 +104,7 @@ def test_loopback_bind_is_honoured_on_every_platform(monkeypatch):
 
 
 # --- show built from a RadioRA 2 DbXmlInfo.xml export ---------------------------------------------
-SAMPLE_DB_XML = Path(__file__).resolve().parent.parent / "lutron_dmx" / "drivers" / "sample_data" / "ra2_sample_dbxml.xml"
+SAMPLE_DB_XML = Path(__file__).resolve().parent.parent / "lutron_to_dmx_bridge" / "drivers" / "sample_data" / "ra2_sample_dbxml.xml"
 
 
 @pytest.fixture(scope="module")
@@ -118,7 +118,7 @@ def site_workspace(gen, site_zones):
 
 
 def test_site_patch_is_what_the_apps_reassign_all_gives(site_zones):
-    from lutron_dmx.drivers.ra2 import parse_db_xml
+    from lutron_to_dmx_bridge.drivers.ra2 import parse_db_xml
 
     inv = parse_db_xml(SAMPLE_DB_XML.read_bytes())
     # The GUI patches areas in inventory order, zones in inventory order within each area.
@@ -178,7 +178,7 @@ def test_site_room_scene_covers_the_whole_room_and_chases_skip_switches(site_zon
 def test_db_xml_run_leaves_the_committed_files_alone(gen, tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["generate_show.py", "--db-xml", str(SAMPLE_DB_XML), "--out-dir", str(tmp_path)])
     gen.main()
-    ET.parse(tmp_path / "Lutron-DMX-Show.qxw")
+    ET.parse(tmp_path / "Lutron-To-DMX-Bridge-Show.qxw")
     rows = (tmp_path / "patch-list.csv").read_text(encoding="utf-8").splitlines()
     assert rows[0].startswith("dmx_address,") and rows[1].startswith("1,20,Exterior,")
     assert not (tmp_path / "app-home").exists()

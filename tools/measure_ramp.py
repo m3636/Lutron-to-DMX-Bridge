@@ -25,11 +25,11 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 from test_ra2 import FakeRepeater, make_config  # noqa: E402
 
-from lutron_dmx.config import AppConfig, DmxConfig  # noqa: E402
-from lutron_dmx.controller import Controller  # noqa: E402
-from lutron_dmx.dmx.engine import DmxEngine, auto_assign  # noqa: E402
-from lutron_dmx.drivers.ra2 import RA2Driver  # noqa: E402
-from lutron_dmx.models import Zone, ZoneType  # noqa: E402
+from lutron_to_dmx_bridge.config import AppConfig, DmxConfig  # noqa: E402
+from lutron_to_dmx_bridge.controller import Controller  # noqa: E402
+from lutron_to_dmx_bridge.dmx.engine import DmxEngine, auto_assign  # noqa: E402
+from lutron_to_dmx_bridge.drivers.ra2 import RA2Driver  # noqa: E402
+from lutron_to_dmx_bridge.models import Zone, ZoneType  # noqa: E402
 
 DUR = 10.0
 

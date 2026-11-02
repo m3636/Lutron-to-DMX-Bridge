@@ -4,8 +4,8 @@
     python packaging/build.py            (add --no-check to skip the start-up check)
 
 Output (zipped, ready to share):
-    macOS    dist/LutronDMX-<version>-macOS.zip     containing "Lutron DMX.app"
-    Windows  dist/LutronDMX-<version>-Windows.zip   containing the "Lutron DMX" folder with "Lutron DMX.exe"
+    macOS    dist/LutronToDMXBridge-<version>-macOS.zip     containing "Lutron To DMX Bridge.app"
+    Windows  dist/LutronToDMXBridge-<version>-Windows.zip   containing the "Lutron To DMX Bridge" folder with "Lutron To DMX Bridge.exe"
 
 The Python you build with must have tkinter (the python.org installers do; Homebrew needs
 `brew install python-tk@3.12`), or the packaged app could not show its log window.
@@ -20,9 +20,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from lutron_dmx import __version__  # noqa: E402
+from lutron_to_dmx_bridge import __version__  # noqa: E402
 DIST = ROOT / "dist"
-NAME = "Lutron DMX"
+NAME = "Lutron To DMX Bridge"
 OS_NAME = {"win32": "Windows", "darwin": "macOS"}.get(sys.platform, "Linux")
 
 
@@ -39,7 +39,7 @@ def build() -> Path:
     shutil.rmtree(DIST / NAME, ignore_errors=True)
     shutil.rmtree(DIST / f"{NAME}.app", ignore_errors=True)
     cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
-           "--distpath", str(DIST), "--workpath", str(ROOT / "build"), str(ROOT / "packaging" / "LutronDMX.spec")]
+           "--distpath", str(DIST), "--workpath", str(ROOT / "build"), str(ROOT / "packaging" / "LutronToDMXBridge.spec")]
     print(" ".join(cmd), flush=True)
     if subprocess.call(cmd, cwd=ROOT):
         sys.exit("PyInstaller failed")
@@ -57,7 +57,7 @@ def executable(built: Path) -> Path:
 
 
 def make_zip(built: Path) -> Path:
-    zip_path = DIST / f"LutronDMX-{__version__}-{OS_NAME}.zip"
+    zip_path = DIST / f"LutronToDMXBridge-{__version__}-{OS_NAME}.zip"
     zip_path.unlink(missing_ok=True)
     if sys.platform == "darwin":
         # ditto keeps the executable bits and symlinks a .app needs; a plain zip would break it

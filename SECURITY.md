@@ -13,5 +13,5 @@ GitHub page, not in a public issue.
 * The only internet access is the optional update check against this repository's GitHub releases.
 * Settings, including the RadioRA 2 integration login, are stored in `config.json` in the app's data
   folder. Protect that folder like any other file holding a password.
-* Backups made with `lutron-dmx backup` contain the controller's full project export, which includes the
+* Backups made with `lutron-to-dmx-bridge backup` contain the controller's full project export, which includes the
   installer's name and contact details. Treat them as private.
