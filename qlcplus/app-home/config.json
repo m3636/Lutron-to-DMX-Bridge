@@ -1,0 +1,145 @@
+{
+  "driver": {
+    "kind": "simulator",
+    "host": "",
+    "hostname": "",
+    "username": "lutron",
+    "password": "integration",
+    "port": null,
+    "integration_report": "",
+    "leap_cert_dir": ""
+  },
+  "scenes": [],
+  "dmx": {
+    "enabled": true,
+    "source": "artnet",
+    "universe": 0,
+    "bind_ip": "127.0.0.1",
+    "serial_port": "",
+    "max_rate_hz": 5.0,
+    "max_commands_per_s": 20.0,
+    "mappings": [
+      {
+        "zone_id": "20",
+        "address": 1,
+        "params": [
+          "intensity"
+        ],
+        "enabled": true
+      },
+      {
+        "zone_id": "21",
+        "address": 2,
+        "params": [
+          "intensity"
+        ],
+        "enabled": true
+      },
+      {
+        "zone_id": "30",
+        "address": 3,
+        "params": [
+          "intensity"
+        ],
+        "enabled": true
+      },
+      {
+        "zone_id": "31",
+        "address": 4,
+        "params": [
+          "intensity"
+        ],
+        "enabled": true
+      },
+      {
+        "zone_id": "32",
+        "address": 5,
+        "params": [
+          "intensity"
+        ],
+        "enabled": true
+      },
+      {
+        "zone_id": "33",
+        "address": 6,
+        "params": [
+          "intensity"
+        ],
+        "enabled": true
+      },
+      {
+        "zone_id": "40",
+        "address": 7,
+        "params": [
+          "intensity"
+        ],
+        "enabled": true
+      },
+      {
+        "zone_id": "41",
+        "address": 8,
+        "params": [
+          "intensity"
+        ],
+        "enabled": true
+      },
+      {
+        "zone_id": "42",
+        "address": 9,
+        "params": [
+          "intensity"
+        ],
+        "enabled": true
+      },
+      {
+        "zone_id": "43",
+        "address": 10,
+        "params": [
+          "intensity"
+        ],
+        "enabled": true
+      },
+      {
+        "zone_id": "44",
+        "address": 11,
+        "params": [
+          "intensity"
+        ],
+        "enabled": true
+      },
+      {
+        "zone_id": "45",
+        "address": 12,
+        "params": [
+          "intensity"
+        ],
+        "enabled": true
+      },
+      {
+        "zone_id": "46",
+        "address": 13,
+        "params": [
+          "intensity"
+        ],
+        "enabled": true
+      },
+      {
+        "zone_id": "50",
+        "address": 14,
+        "params": [
+          "intensity"
+        ],
+        "enabled": true
+      }
+    ]
+  },
+  "schedule_sets": [],
+  "active_schedule_set": null,
+  "updates": {
+    "check": true,
+    "token": "",
+    "dismissed_version": ""
+  },
+  "web_host": "127.0.0.1",
+  "web_port": 8080
+}

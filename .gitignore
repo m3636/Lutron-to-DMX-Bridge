@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+*.spec
+!packaging/*.spec
+
+qlcplus/custom/

@@ -1,0 +1,132 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  # The "New release" workflow starts this on the new tag: a tag pushed with the default
+  # GITHUB_TOKEN does not trigger the push event above, but workflow_dispatch is allowed.
+  workflow_dispatch:
+    inputs:
+      release_notes:
+        description: Text for the top of the release notes (only used when run on a vX.Y.Z tag)
+        type: string
+        required: false
+
+# Jobs get a read-only token unless they ask for more (the release job does, below).
+permissions:
+  contents: read
+
+# Drop superseded runs of the same ref.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: Linux
+            runs-on: ubuntu-latest
+          - os: Windows
+            runs-on: windows-latest
+          # Apple silicon (arm64) hosted runner, so the macOS app is built for arm64.
+          - os: macOS
+            runs-on: macos-15
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e ".[dev]"
+      # Linux needs a virtual display for the log-window tests.
+      - if: matrix.os == 'Linux'
+        run: xvfb-run -a python -m pytest -q
+      - if: matrix.os != 'Linux'
+        run: python -m pytest -q
+      # Tk aborts (rather than fails) without a window server, so the window test only runs here as a
+      # separate, non-blocking step.
+      - name: Log window test (macOS, informational)
+        if: matrix.os == 'macOS'
+        continue-on-error: true
+        timeout-minutes: 3
+        env:
+          LUTRON_DMX_TK_TESTS: "1"
+        run: python -m pytest tests/test_launcher.py -q
+
+  build:
+    needs: test
+    strategy:
+      matrix:
+        include:
+          - os: Windows
+            runs-on: windows-latest
+          - os: macOS
+            runs-on: macos-15
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Tag matches the app version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          VERSION=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' lutron_dmx/__init__.py)
+          if [ "v$VERSION" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match __version__ $VERSION in lutron_dmx/__init__.py"
+            exit 1
+          fi
+      - name: Remove stale build output
+        shell: bash
+        run: rm -rf build dist
+      - run: python -m pip install -e . pyinstaller
+      # Builds the double-clickable app, starts it once (--self-check) and zips it.
+      - run: python packaging/build.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LutronDMX-${{ matrix.os }}
+          path: dist/LutronDMX-*-${{ matrix.os }}.zip
+          if-no-files-found: error
+
+  # A vX.Y.Z tag (pushed by hand, or built by the "New release" workflow) publishes a GitHub Release
+  # with the zips attached.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: LutronDMX-*
+          merge-multiple: true
+          path: dist
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EXTRA_NOTES: ${{ inputs.release_notes }}
+        run: |
+          cd dist
+          sha256sum LutronDMX-*.zip > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            # Re-run: refresh the files but keep any notes that were edited by hand.
+            gh release upload "$GITHUB_REF_NAME" LutronDMX-*.zip SHA256SUMS.txt --clobber
+          else
+            # The notes are the optional text, then GitHub's list of PRs merged since the previous release.
+            gh api "repos/$GH_REPO/releases/generate-notes" -f tag_name="$GITHUB_REF_NAME" --jq .body > generated.md
+            if [ -n "$EXTRA_NOTES" ]; then printf '%s\n\n' "$EXTRA_NOTES" > notes.md; else : > notes.md; fi
+            cat generated.md >> notes.md
+            gh release create "$GITHUB_REF_NAME" LutronDMX-*.zip SHA256SUMS.txt \
+              --verify-tag --title "Lutron DMX ${GITHUB_REF_NAME#v}" --notes-file notes.md
+          fi

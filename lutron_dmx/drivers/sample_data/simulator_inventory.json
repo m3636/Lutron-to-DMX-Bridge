@@ -1,0 +1,42 @@
+{
+  "system": "Simulator",
+  "description": "Offline demo system for trying the app without a controller. All names are made up; IDs are RA2-style integration IDs.",
+  "areas": [
+    {"id": "2", "name": "Utility Room"},
+    {"id": "3", "name": "Exterior"},
+    {"id": "4", "name": "Main Stairs"},
+    {"id": "5", "name": "Back Porch"},
+    {"id": "6", "name": "Living Room"},
+    {"id": "7", "name": "Office"},
+    {"id": "8", "name": "Sitting Room"}
+  ],
+  "zones": [
+    {"id": "20", "name": "Exterior Uplights", "area_id": "3", "type": "dimmer", "level": 100.0},
+    {"id": "21", "name": "All Step Lights", "area_id": "3", "type": "switch", "level": 100.0},
+
+    {"id": "30", "name": "Stair Pendants", "area_id": "4", "type": "dimmer", "level": 85.0},
+    {"id": "31", "name": "Stair Accent", "area_id": "4", "type": "dimmer", "level": 75.0},
+    {"id": "32", "name": "Stair Art Wall", "area_id": "4", "type": "dimmer", "level": 90.0},
+    {"id": "33", "name": "Stair Recessed", "area_id": "4", "type": "dimmer", "level": 80.0},
+
+    {"id": "40", "name": "Living East Recessed", "area_id": "6", "type": "dimmer", "level": 75.0},
+    {"id": "41", "name": "Living Bar Recessed", "area_id": "6", "type": "dimmer", "level": 80.0},
+    {"id": "42", "name": "Living Center Recessed", "area_id": "6", "type": "dimmer", "level": 75.0},
+    {"id": "43", "name": "Living Floor Lamps", "area_id": "6", "type": "dimmer", "level": 100.0},
+    {"id": "44", "name": "Living West Recessed", "area_id": "6", "type": "dimmer", "level": 75.0},
+    {"id": "45", "name": "Living Fan Light", "area_id": "6", "type": "dimmer", "level": 90.0},
+    {"id": "46", "name": "Living Porch Recessed", "area_id": "6", "type": "dimmer", "level": 85.0},
+
+    {"id": "50", "name": "Sitting Room Lights", "area_id": "8", "type": "dimmer", "level": 0.0}
+  ],
+  "keypads": [
+    {"id": "60", "name": "Main Stairs Keypad", "area_id": "4", "buttons": ["Stairs On", "Stairs Dim", "Accent", "Night", "Off"]},
+    {"id": "61", "name": "Living Room Keypad", "area_id": "6", "buttons": ["Entertain", "Relax", "Bright", "Porch", "All Off"]},
+    {"id": "62", "name": "Sitting Room Keypad", "area_id": "8", "buttons": ["On", "Reading", "Off"]}
+  ],
+  "schedules": [
+    {"id": "70:1", "name": "Sunset Exterior On", "enabled": true, "description": "Sunset, every day: Exterior zones to 100%", "timeclock_id": "70"},
+    {"id": "70:2", "name": "Midnight All Off", "enabled": true, "description": "12:00 AM, every day: all zones off", "timeclock_id": "70"},
+    {"id": "70:3", "name": "Morning Step Lights Off", "enabled": false, "description": "Sunrise + 15 min: All Step Lights off", "timeclock_id": "70"}
+  ]
+}

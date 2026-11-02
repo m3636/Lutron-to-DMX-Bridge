@@ -1,0 +1,146 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Trimmed-down example of http://<main-repeater>/DbXmlInfo.xml from a
+     RadioRA 2 Main Repeater. Structure follows real exports; IDs / names are
+     sample data. Used by tests. -->
+<Project>
+  <ProjectName ProjectName="Sample Residence" UUID="1" />
+  <Dealer AccountNumber="" Name="" Email="" Phone="" />
+  <Copyright />
+  <Areas>
+    <Area Name="Home" UUID="2" IntegrationID="0" OccupancyGroupAssignedToID="0" SortOrder="0">
+      <DeviceGroups>
+        <DeviceGroup Name="Equipment Room" SortOrder="0">
+          <Devices>
+            <Device Name="Main Repeater 1" UUID="10" SerialNumber="12345678" IntegrationID="1" DeviceType="MAIN_REPEATER" GangPosition="0" SortOrder="0">
+              <Components>
+                <Component ComponentNumber="1" ComponentType="BUTTON">
+                  <Button Name="Button 1" UUID="11" Engraving="Phantom All Off" ButtonType="SingleAction" LedLogic="1" />
+                </Component>
+              </Components>
+            </Device>
+          </Devices>
+        </DeviceGroup>
+      </DeviceGroups>
+      <Scenes />
+      <ShadeGroups />
+      <Outputs />
+      <Areas>
+        <Area Name="Utility Room" UUID="20" IntegrationID="2" OccupancyGroupAssignedToID="0" SortOrder="0">
+          <DeviceGroups />
+          <Scenes />
+          <ShadeGroups />
+          <Outputs />
+          <Areas />
+        </Area>
+        <Area Name="Exterior" UUID="30" IntegrationID="3" OccupancyGroupAssignedToID="0" SortOrder="1">
+          <DeviceGroups />
+          <Scenes />
+          <ShadeGroups />
+          <Outputs>
+            <Output Name="Exterior Uplights" UUID="31" IntegrationID="20" OutputType="INC" Wattage="0" SortOrder="0" />
+            <Output Name="All Step Lights" UUID="32" IntegrationID="21" OutputType="NON_DIM" Wattage="0" SortOrder="1" />
+          </Outputs>
+          <Areas />
+        </Area>
+        <Area Name="Main Stairs" UUID="40" IntegrationID="4" OccupancyGroupAssignedToID="0" SortOrder="2">
+          <DeviceGroups>
+            <DeviceGroup Name="Main Stairs Keypad" SortOrder="0">
+              <Devices>
+                <Device Name="Main Stairs Keypad" UUID="41" SerialNumber="0" IntegrationID="60" DeviceType="SEETOUCH_KEYPAD" GangPosition="0" SortOrder="0">
+                  <Components>
+                    <Component ComponentNumber="1" ComponentType="BUTTON">
+                      <Button Name="Button 1" UUID="42" Engraving="Stairs On" ButtonType="Toggle" LedLogic="1" />
+                    </Component>
+                    <Component ComponentNumber="2" ComponentType="BUTTON">
+                      <Button Name="Button 2" UUID="43" Engraving="Night" ButtonType="Toggle" LedLogic="1" />
+                    </Component>
+                    <Component ComponentNumber="81" ComponentType="LED">
+                      <LED UUID="44" />
+                    </Component>
+                  </Components>
+                </Device>
+              </Devices>
+            </DeviceGroup>
+          </DeviceGroups>
+          <Scenes />
+          <ShadeGroups />
+          <Outputs>
+            <Output Name="Stair Pendants" UUID="45" IntegrationID="30" OutputType="ELV" Wattage="0" SortOrder="0" />
+            <Output Name="Stair Accent" UUID="46" IntegrationID="31" OutputType="MLV" Wattage="0" SortOrder="1" />
+            <Output Name="Stair Art Wall" UUID="47" IntegrationID="32" OutputType="AUTO_DETECT" Wattage="0" SortOrder="2" />
+            <Output Name="Stair Recessed" UUID="48" IntegrationID="33" OutputType="INC" Wattage="0" SortOrder="3" />
+          </Outputs>
+          <Areas />
+        </Area>
+        <Area Name="Living Room" UUID="60" IntegrationID="6" OccupancyGroupAssignedToID="0" SortOrder="3">
+          <DeviceGroups>
+            <!-- Some exports place Device directly under DeviceGroups -->
+            <Device Name="Living Room Keypad" UUID="61" SerialNumber="0" IntegrationID="61" DeviceType="HYBRID_SEETOUCH_KEYPAD" GangPosition="0" SortOrder="0">
+              <Components>
+                <Component ComponentNumber="1" ComponentType="BUTTON">
+                  <Button Name="Button 1" UUID="62" Engraving="Entertain" ButtonType="Toggle" LedLogic="1" />
+                </Component>
+                <Component ComponentNumber="2" ComponentType="BUTTON">
+                  <Button Name="Button 2" UUID="63" Engraving="" ButtonType="Toggle" LedLogic="1" />
+                </Component>
+              </Components>
+            </Device>
+            <Device Name="Living Pico" UUID="64" SerialNumber="0" IntegrationID="62" DeviceType="PICO_KEYPAD" GangPosition="0" SortOrder="1">
+              <Components>
+                <Component ComponentNumber="2" ComponentType="BUTTON">
+                  <Button Name="Button 2" UUID="65" Engraving="On" ButtonType="SingleAction" LedLogic="0" />
+                </Component>
+                <Component ComponentNumber="4" ComponentType="BUTTON">
+                  <Button Name="Button 4" UUID="66" Engraving="Off" ButtonType="SingleAction" LedLogic="0" />
+                </Component>
+              </Components>
+            </Device>
+            <Device Name="Living Occ" UUID="67" SerialNumber="0" IntegrationID="63" DeviceType="MOTION_SENSOR" GangPosition="0" SortOrder="2">
+              <Components />
+            </Device>
+          </DeviceGroups>
+          <Scenes />
+          <ShadeGroups />
+          <Outputs>
+            <Output Name="Living East Recessed" UUID="70" IntegrationID="40" OutputType="INC" Wattage="0" SortOrder="0" />
+            <Output Name="Living Fan Light" UUID="71" IntegrationID="45" OutputType="INC" Wattage="0" SortOrder="1" />
+            <Output Name="Living Fan" UUID="72" IntegrationID="47" OutputType="CEILING_FAN_TYPE" Wattage="0" SortOrder="2" />
+            <Output Name="Living Shade" UUID="73" IntegrationID="48" OutputType="SYSTEM_SHADE" Wattage="0" SortOrder="3" />
+          </Outputs>
+          <Areas>
+            <!-- Nested sub-area to exercise recursion -->
+            <Area Name="114a Living Porch" UUID="80" IntegrationID="9" OccupancyGroupAssignedToID="0" SortOrder="0">
+              <DeviceGroups />
+              <Scenes />
+              <ShadeGroups />
+              <Outputs>
+                <Output Name="Living Porch Recessed" UUID="81" IntegrationID="46" OutputType="RELAY_LIGHTING" Wattage="0" SortOrder="0" />
+              </Outputs>
+              <Areas />
+            </Area>
+          </Areas>
+        </Area>
+        <Area Name="Sitting Room" UUID="90" IntegrationID="8" OccupancyGroupAssignedToID="0" SortOrder="4">
+          <DeviceGroups />
+          <Scenes />
+          <ShadeGroups />
+          <Outputs>
+            <Output Name="Sitting Room Lights" UUID="91" IntegrationID="50" OutputType="ELV" Wattage="0" SortOrder="0" />
+          </Outputs>
+          <Areas />
+        </Area>
+      </Areas>
+    </Area>
+  </Areas>
+  <Timeclocks>
+    <Timeclock Name="Timeclock" UUID="100" IntegrationID="70" SortOrder="0">
+      <Events>
+        <Event Name="Sunset Exterior On" UUID="101" SortOrder="0" />
+        <Event Name="Midnight All Off" UUID="102" SortOrder="1" />
+        <Event Name="Morning Step Lights Off" UUID="103" SortOrder="2" />
+      </Events>
+    </Timeclock>
+  </Timeclocks>
+  <HVACs />
+  <Programs />
+</Project>
