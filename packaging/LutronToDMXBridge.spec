@@ -3,7 +3,7 @@
 import sys
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_all, collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
 
 ROOT = Path(SPECPATH).parent  # noqa: F821 (SPECPATH is provided by PyInstaller)
 sys.path.insert(0, str(ROOT))
@@ -24,6 +24,8 @@ binaries = []
 hiddenimports = []
 for pkg in ("lutron_to_dmx_bridge", "uvicorn", "websockets", "zeroconf", "ifaddr"):
     hiddenimports += collect_submodules(pkg)
+# CA bundle the update check verifies GitHub's certificate against (the frozen Python has no system store)
+datas += collect_data_files("certifi")
 d, b, h = collect_all("pylutron_caseta")
 datas += d
 binaries += b

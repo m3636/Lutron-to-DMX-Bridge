@@ -33,6 +33,7 @@ import logging
 import os
 import re
 import shutil
+import socket
 import ssl
 import subprocess
 import sys
@@ -73,7 +74,85 @@ PLATFORM_LABEL = {"darwin": "macOS", "win32": "Windows"}
 
 
 class UpdateError(Exception):
-    """A problem worth showing to the user in plain words."""
+    """A problem worth showing to the user in plain words.
+
+    ``detail`` is the technical reason (exception type and text); it goes to the log, not the screen.
+    ``kind`` tells the causes apart: "network", "timeout", "tls", "http" or "other"."""
+
+    def __init__(self, message: str, *, detail: str = "", kind: str = "other") -> None:
+        super().__init__(message)
+        self.detail = detail
+        self.kind = kind
+
+
+def _tls_context() -> ssl.SSLContext:
+    """The TLS context for talking to GitHub.
+
+    The packaged app is built with a Python (python.org's, on macOS) whose OpenSSL looks for its trusted
+    certificates in a folder that exists only on the build machine, so on a user's computer the default
+    context trusts nothing and every HTTPS request fails certificate verification.  Mozilla's bundle from
+    ``certifi`` (shipped inside the app) is therefore added to whatever the system provides."""
+    ctx = ssl.create_default_context()
+    try:
+        import certifi
+
+        ctx.load_verify_locations(cafile=certifi.where())
+    except ImportError:
+        log.warning("certifi is not installed; relying on the system's trusted certificates only")
+    except OSError as exc:
+        log.warning("Could not load certifi's certificate bundle: %r", exc)
+    return ctx
+
+
+def _describe(exc: BaseException) -> str:
+    return f"{type(exc).__name__}: {exc}"
+
+
+def network_error(exc: BaseException, doing: str = "check for updates") -> UpdateError:
+    """Turn what urllib raised into an :class:`UpdateError` that says which kind of failure it was.
+
+    HTTP status errors, certificate (TLS) problems, timeouts and plain connectivity problems each get
+    their own wording, because they have different fixes; the exact exception goes into ``detail``."""
+    if isinstance(exc, urllib.error.HTTPError):
+        code = exc.code
+        hdrs = exc.headers
+        detail = f"HTTP {code} {exc.reason} for {exc.url}"
+        if code == 404:
+            return UpdateError("No release found. If the repository is still private, updates can't be "
+                               "checked without an access token.", detail=detail, kind="http")
+        if code == 401:
+            return UpdateError("GitHub rejected the access token (401). Check the token in Settings > Updates "
+                               "or clear it.", detail=detail, kind="http")
+        if code in (403, 429):
+            limited = code == 429 or (hdrs is not None and (hdrs.get("X-RateLimit-Remaining") == "0" or
+                                                              hdrs.get("Retry-After") is not None))
+            if limited:
+                reset = hdrs.get("X-RateLimit-Reset") if hdrs is not None else None
+                when = ""
+                if reset and reset.isdigit():
+                    when = " It resets at " + datetime.fromtimestamp(int(reset)).strftime("%H:%M") + "."
+                return UpdateError("GitHub's rate limit for this network has been reached; try again later." + when,
+                                   detail=detail, kind="http")
+            return UpdateError("GitHub refused the request (403). If a token is set in Settings > Updates, "
+                               "it may lack access to the repository.", detail=detail, kind="http")
+        return UpdateError(f"GitHub answered with an error (HTTP {code}) while trying to {doing}.",
+                           detail=detail, kind="http")
+    reason = getattr(exc, "reason", None)
+    inner = reason if isinstance(reason, BaseException) else exc
+    detail = _describe(exc) if inner is exc else f"{_describe(exc)} (cause: {_describe(inner)})"
+    if isinstance(inner, ssl.SSLError) and not isinstance(inner, ssl.SSLZeroReturnError) \
+            and "timed out" not in str(inner):
+        return UpdateError(f"Could not {doing}: this computer does not trust GitHub's security certificate (TLS "
+                           "error). A VPN, proxy or antivirus that inspects HTTPS traffic, or a wrong clock, "
+                           "can cause this.", detail=detail, kind="tls")
+    if isinstance(inner, (TimeoutError, socket.timeout)) or "timed out" in str(inner):
+        return UpdateError(f"GitHub did not answer in time while trying to {doing}. Try again in a moment.",
+                           detail=detail, kind="timeout")
+    if isinstance(inner, socket.gaierror):
+        return UpdateError(f"Could not find GitHub on the network to {doing} (DNS lookup failed; offline?).",
+                           detail=detail, kind="network")
+    return UpdateError(f"Could not reach GitHub to {doing} (offline, or a firewall is blocking it).",
+                       detail=detail, kind="network")
 
 
 # ---------------------------------------------------------------------------
@@ -290,11 +369,13 @@ class Updater:
         except UpdateError as exc:
             self.check_error = str(exc)
             self.checked_at = _utcnow()
-            if self._last_error_logged != self.check_error:
-                self._last_error_logged = self.check_error
-                log.info("Update check: %s", self.check_error)
+            line = f"{self.check_error} [{exc.detail}]" if exc.detail else self.check_error
+            if self._last_error_logged != line:
+                self._last_error_logged = line
+                # a certificate problem is a defect to look at; being offline or a private repo is routine
+                log.log(logging.WARNING if exc.kind == "tls" else logging.INFO, "Update check: %s", line)
             else:
-                log.debug("Update check: %s", self.check_error)
+                log.debug("Update check: %s", line)
             return None
         except Exception as exc:  # a bug here must never take the app down
             self.check_error = "The update check failed unexpectedly."
@@ -314,16 +395,8 @@ class Updater:
         url = f"{self.api_base}/repos/{self.repo}/releases/latest"
         try:
             data = json.loads(self._get(url, accept="application/vnd.github+json", max_bytes=2_000_000))
-        except urllib.error.HTTPError as exc:
-            if exc.code == 404:
-                raise UpdateError("No release found. If the repository is still private, updates can't be "
-                                  "checked without an access token.") from exc
-            if exc.code in (401, 403):
-                raise UpdateError("GitHub refused the update check (rate limit, or the access token is not "
-                                  "valid).") from exc
-            raise UpdateError(f"GitHub answered the update check with an error ({exc.code}).") from exc
-        except (urllib.error.URLError, OSError, TimeoutError, ssl.SSLError) as exc:
-            raise UpdateError("Could not reach GitHub to check for updates (offline?).") from exc
+        except (urllib.error.URLError, OSError, TimeoutError) as exc:  # HTTPError is a URLError
+            raise network_error(exc) from exc
         except ValueError as exc:
             raise UpdateError("GitHub's answer to the update check could not be read.") from exc
         if not isinstance(data, dict) or data.get("draft") or data.get("prerelease"):
@@ -371,7 +444,7 @@ class Updater:
         return urllib.request.Request(url, headers=headers)
 
     def _open(self, req: urllib.request.Request):
-        ctx = ssl.create_default_context() if self._strict else None
+        ctx = _tls_context() if self._strict else None
         handlers: list = [_GuardedRedirects(self._url_ok)]
         if ctx is not None:
             handlers.append(urllib.request.HTTPSHandler(context=ctx))
@@ -433,6 +506,8 @@ class Updater:
         try:
             await asyncio.to_thread(self._apply_blocking, rel)
         except UpdateError as exc:
+            if exc.detail:
+                log.warning("Update problem detail: %s", exc.detail)
             self._fail(str(exc))
         except Exception as exc:
             log.exception("Update failed")
@@ -482,8 +557,11 @@ class Updater:
                               "attached (the build may still be running). Try again in a few minutes.")
         try:
             sums_text = self._get(self._asset_source(sums), "application/octet-stream", 1_000_000).decode("utf-8")
-        except (urllib.error.URLError, OSError, UnicodeDecodeError, TimeoutError) as exc:
-            raise UpdateError(f"Could not download SHA256SUMS.txt: {exc}") from exc
+        except UnicodeDecodeError as exc:
+            raise UpdateError("SHA256SUMS.txt could not be read.", detail=_describe(exc)) from exc
+        except (urllib.error.URLError, OSError, TimeoutError) as exc:
+            err = network_error(exc, "download SHA256SUMS.txt")
+            raise UpdateError(err.args[0], detail=err.detail, kind=err.kind) from exc
         expected = parse_sha256sums(sums_text).get(name)
         if expected is None:
             raise UpdateError(f"SHA256SUMS.txt does not list {name}; not installing an unverifiable file.")
@@ -509,7 +587,8 @@ class Updater:
                     if total:
                         self.progress = min(0.7, 0.7 * done / total)
         except (urllib.error.URLError, OSError, TimeoutError) as exc:
-            raise UpdateError(f"The download failed: {exc}") from exc
+            err = network_error(exc, "download the update")
+            raise UpdateError(err.args[0], detail=err.detail, kind=err.kind) from exc
         self._set("verifying", 0.7, "Checking the download…")
         if digest.hexdigest() != expected:
             part.unlink(missing_ok=True)

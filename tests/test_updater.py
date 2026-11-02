@@ -11,6 +11,7 @@ import asyncio
 import http.server
 import json
 import os
+import ssl
 import stat
 import subprocess
 import sys
@@ -41,6 +42,7 @@ class FakeGitHub:
         self.release: dict | None = None
         self.files: dict[str, bytes] = {}
         self.status = 200
+        self.headers: dict[str, str] = {}  # extra headers on an error answer
         self.requests: list[tuple[str, dict]] = []
         outer = self
 
@@ -53,6 +55,8 @@ class FakeGitHub:
                 if self.path == f"/repos/{REPO}/releases/latest":
                     if outer.status != 200 or outer.release is None:
                         self.send_response(outer.status or 404)
+                        for k, v in outer.headers.items():
+                            self.send_header(k, v)
                         self.end_headers()
                         return
                     body = json.dumps(outer.release).encode()
@@ -203,18 +207,121 @@ async def test_token_is_sent_when_configured(gh, home, tmp_path):
     assert gh.requests[0][1]["authorization"] == "Bearer ghp_secret"
 
 
-async def test_rate_limit_and_bad_token_message(gh, home, tmp_path):
+async def test_bad_token_message(gh, home, tmp_path):
+    gh.status = 401
+    u = make_updater(gh, home, tmp_path)
+    await u.check()
+    assert "token" in u.check_error and "401" in u.check_error
+
+
+async def test_forbidden_without_rate_limit_headers_is_a_refusal(gh, home, tmp_path):
     gh.status = 403
     u = make_updater(gh, home, tmp_path)
     await u.check()
-    assert "refused" in u.check_error
+    assert "refused" in u.check_error and "403" in u.check_error and "rate limit" not in u.check_error
 
 
-async def test_offline_is_quiet(home, tmp_path):
+async def test_rate_limit_is_named(gh, home, tmp_path):
+    gh.status = 403
+    gh.headers = {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1893456000"}
+    u = make_updater(gh, home, tmp_path)
+    await u.check()
+    assert "rate limit" in u.check_error
+    gh.status, gh.headers = 429, {}
+    await u.check()
+    assert "rate limit" in u.check_error
+
+
+async def test_server_error_names_the_status(gh, home, tmp_path):
+    gh.status = 502
+    u = make_updater(gh, home, tmp_path)
+    await u.check()
+    assert "502" in u.check_error and "offline" not in u.check_error
+
+
+async def test_offline_is_quiet(home, tmp_path, caplog):
     u = Updater(AppConfig(), repo=REPO, api_base="http://127.0.0.1:9", web_base="http://127.0.0.1:9",
                 current="0.3.0", install=InstallInfo("windows-exe", "x", True), platform=WIN)
-    assert await u.check() is None
+    with caplog.at_level("INFO"):
+        assert await u.check() is None
     assert "offline" in u.check_error and not u.public_state()["available"]
+    # the underlying reason is in the log, not only the friendly sentence
+    assert any("ConnectionRefusedError" in r.getMessage() for r in caplog.records)
+    assert not [r for r in caplog.records if r.levelname in ("WARNING", "ERROR")]
+
+
+def test_network_error_tells_the_causes_apart():
+    import socket
+    import urllib.error
+
+    tls = upd.network_error(urllib.error.URLError(ssl.SSLCertVerificationError(1, "[SSL: CERTIFICATE_VERIFY_FAILED] unable to get local issuer certificate")))
+    assert tls.kind == "tls" and "certificate" in str(tls) and "offline" not in str(tls)
+    assert "CERTIFICATE_VERIFY_FAILED" in tls.detail
+    assert upd.network_error(socket.timeout("timed out")).kind == "timeout"
+    assert upd.network_error(urllib.error.URLError(socket.timeout("timed out"))).kind == "timeout"
+    dns = upd.network_error(urllib.error.URLError(socket.gaierror(8, "nodename nor servname provided")))
+    assert dns.kind == "network" and "DNS" in str(dns)
+    refused = upd.network_error(urllib.error.URLError(ConnectionRefusedError(61, "Connection refused")))
+    assert refused.kind == "network" and "ConnectionRefusedError" in refused.detail
+
+
+@pytest.fixture
+def https_server(tmp_path):
+    """A local HTTPS server with a self-signed certificate: nothing in any trust store vouches for it."""
+    import datetime
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
+            .serial_number(x509.random_serial_number()).not_valid_before(now - datetime.timedelta(days=1))
+            .not_valid_after(now + datetime.timedelta(days=1))
+            .add_extension(x509.SubjectAlternativeName([x509.IPAddress(__import__("ipaddress").ip_address("127.0.0.1"))]), False)
+            .sign(key, hashes.SHA256()))
+    (tmp_path / "c.pem").write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    (tmp_path / "k.pem").write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                                       serialization.NoEncryption()))
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # pragma: no cover - never reached: the handshake fails first
+            self.send_response(404)
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(tmp_path / "c.pem", tmp_path / "k.pem")
+    server.socket = ctx.wrap_socket(server.socket, server_side=True)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"https://127.0.0.1:{server.server_address[1]}"
+    server.shutdown()
+    server.server_close()
+
+
+async def test_certificate_failure_is_reported_as_tls_and_logged(https_server, home, caplog):
+    """The packaged app once had no CA certificates, and every HTTPS failure was reported as 'offline'."""
+    u = Updater(AppConfig(), repo=REPO, api_base=https_server, web_base=https_server, current="0.3.0",
+                install=InstallInfo("windows-exe", "x", True), platform=WIN)
+    assert u._strict
+    u._url_ok = lambda url: True  # strict mode only allows github.com; here the real TLS stack talks to a local server
+    with caplog.at_level("INFO"):
+        assert await u.check() is None
+    assert "offline" not in u.check_error and "certificate" in u.check_error
+    warn = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert warn and "CERTIFICATE_VERIFY_FAILED" in warn[0].getMessage()
+
+
+def test_tls_context_includes_the_bundled_ca_certificates(monkeypatch):
+    monkeypatch.setenv("SSL_CERT_FILE", "/nonexistent")
+    monkeypatch.setenv("SSL_CERT_DIR", "/nonexistent")
+    assert upd._tls_context().cert_store_stats()["x509_ca"] > 0
 
 
 async def test_prerelease_and_junk_tags_are_ignored(gh, home, tmp_path):
