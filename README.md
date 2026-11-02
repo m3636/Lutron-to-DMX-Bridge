@@ -13,6 +13,91 @@ Local-only control of a Lutron **RadioRA 2** (Main Repeater) or **RA3 / RA2 Sele
 - Status area: five chips in the header (Lutron, DMX in, Output, Alerts, Server) show health at a glance, click one for the details, or open the **Status** tab for the same numbers plus 2-minute graphs. See [Reading the status area](#reading-the-status-area).
 - JSON backup of everything the system lets us read.
 
+## Setting up on a Mac (step-by-step guide)
+
+This guide is for anyone who just wants to use the app. You do not need to know anything technical. It takes about 10 minutes the first time. After that, you only double-click the app.
+
+**What you need**
+- A Mac with an Apple chip (M1 or newer). To check: click the Apple menu in the top-left corner, choose **About This Mac**, and look for the word "Apple" next to **Chip**. The app is not built for older Intel Macs.
+- Your Mac connected to the same network (Wi-Fi or cable) as the Lutron system.
+- The user name and password for the Lutron system, if it is a RadioRA 2 system. Your installer or the person who runs the lighting system can give you these.
+
+### Part 1: Download and install
+
+1. Open the **Releases** page in your web browser: <https://github.com/m3636/Lutron-to-DMX-Bridge/releases>. If it says "404" or "Page not found", ask the person who shared this app to give you access first.
+2. Find the newest release at the top. Under **Assets**, click the file that ends in `-macOS.zip`. It is named like `LutronToDMXBridge-0.4.0-macOS.zip`. The file goes to your **Downloads** folder.
+3. Open the **Downloads** folder (in the Finder, click **Downloads** in the sidebar).
+4. Double-click the `.zip` file. A new item called **Lutron To DMX Bridge** (with a round icon) appears next to it. Your Mac may already have done this for you.
+5. Open a new Finder window and click **Applications** in the sidebar.
+6. Drag **Lutron To DMX Bridge** from Downloads into the **Applications** window. This matters: if you run the app straight from Downloads, it cannot update itself later.
+7. You can now delete the `.zip` file from Downloads.
+
+### Part 2: Open it for the first time (Mac security steps)
+
+macOS is cautious about apps that do not come from the App Store. This app is safe, but it is not signed with an Apple developer account, so your Mac will block it the first time. You only have to do this once. It can take a few tries, and that is normal.
+
+1. In the **Applications** folder, double-click **Lutron To DMX Bridge**.
+2. A message appears saying the app "cannot be opened" or "Apple could not verify" it. Click **Done**. Do **not** click **Move to Trash**.
+3. Open the Apple menu (top-left corner) and choose **System Settings**.
+4. In the left sidebar, click **Privacy & Security**.
+5. Scroll down to the **Security** section. You will see a line saying **"Lutron To DMX Bridge" was blocked to protect your Mac**. Click **Open Anyway** next to it.
+6. Type your Mac password (or use Touch ID) and confirm.
+7. Go back to the **Applications** folder and double-click **Lutron To DMX Bridge** again.
+8. A new message asks whether you are sure. Click **Open Anyway** (on some versions the button says **Open**).
+9. Wait a few seconds. A small window with scrolling text appears (this is the "log window") and your web browser opens with the control page.
+
+**If nothing seems to happen, or the same message comes back:** that is normal. Double-click the app again. Some Macs need two or three tries before they accept it. If **Open Anyway** is missing in System Settings, double-click the app once more, then look in System Settings again. The button only shows for about an hour after the last blocked attempt.
+
+**Another way:** in the **Applications** folder, hold down the **Control** key and click the app (or right-click it), then choose **Open**, then click **Open** in the message. On newer Macs (macOS 15 "Sequoia" and later) this often does not work, so use the System Settings steps above.
+
+The exact wording of these messages and buttons is a little different on each macOS version. If yours does not match word for word, look for the nearest match. The idea is always the same: tell the Mac that you trust this app.
+
+**Network question.** The first time it runs, your Mac may ask whether **Lutron To DMX Bridge** can **find and connect to devices on your local network**. Click **Allow**. If you click "Don't Allow", the app cannot find the Lutron system. You can fix this later in **System Settings → Privacy & Security → Local Network**: turn on the switch next to Lutron To DMX Bridge.
+
+### Part 3: Connect to the Lutron system (first run only)
+
+The first time, the control page opens on the **Settings** tab. If your browser did not open, click **Open web GUI** in the log window.
+
+1. Under **Lutron system**, click **System type** and pick the kind of system you have:
+   - **RadioRA 2 (Main Repeater, telnet integration)**: the classic system with a "Main Repeater" box.
+   - **RadioRA 3 / RA2 Select / Caseta (LEAP)**: newer systems with a "processor" or "Smart Bridge" box.
+   - **Simulator (demo, no hardware)**: a pretend house, handy for trying things out without touching real lights.
+
+   Not sure which one? Ask the person who set up the lights, or try **RadioRA 2** first.
+2. Click **Find my controller**. Wait a few seconds. If you have a RadioRA 2 system, tick **Also scan the whole network** first, then click **Find my controller**. This takes longer, so be patient.
+3. When the controller shows up in the list, click **Use this one**. The address fills in by itself. If nothing is found, check that your Mac is on the same network as the Lutron system and try again. If it still fails, ask for the controller's address (it looks like `192.168.1.50`) and type it into **Host / IP address**.
+4. **For RadioRA 2:** type the **Integration user name** and **Integration password** you were given.
+   **For RadioRA 3 / RA2 Select / Caseta:** click **Pair**, then walk to the Lutron processor or bridge and press the small button on the back within about 3 minutes. Come back and wait for "Paired".
+5. Click **Save & reconnect**.
+6. Click the **Devices** tab. Your rooms and lights appear. Now you are connected.
+
+You will not need to do Part 3 again. The app remembers your settings, even after a restart.
+
+### Part 4: Everyday use
+
+- **Start the app:** double-click **Lutron To DMX Bridge** in Applications. Your browser opens with the control page. (If the app is already running, double-clicking just opens the page again.)
+- **Devices:** click a room's name to open it and see its lights. Each light has a switch to turn it on or off and a slider to dim it. **All on** and **All off** do a whole room at once. Changes made at a wall keypad show up here a moment later.
+- **Scenes:** make your own looks (for example "Dinner"). Set the lights how you like them and click **Snapshot all lights**, or click **New scene** to pick lights and levels yourself. Later, click **Activate** to set every light in the scene at once. These scenes belong to this app. They are not Lutron's own scenes, and they do not change anything inside the Lutron system.
+- **Schedules:** see the timed events in the Lutron system and turn them off or back on. Nothing is ever deleted.
+- **DMX:** connects your lighting console. Ask whoever set up the DMX side before changing anything here.
+- **Status:** shows whether everything is healthy. The small coloured chips at the top right turn amber or red when something needs attention.
+- **Quit the app:** close the small log window, or click **Quit** in it. The control page in your browser stops working when the app is closed. To keep it running, **minimise** the log window (the yellow button) instead of closing it.
+- **Updates:** a blue bar appears at the top of the page when a newer version is out. Click **Update now** when it suits you. Your settings and scenes are kept.
+
+> **Be careful with schedules and DMX.** Turning off a schedule means it will not run until you turn it back on. While DMX input is switched on, lights follow the lighting console, so a light the console is not using can be set to 0. If you are unsure, ask before changing these.
+
+### If something goes wrong
+
+| What you see | What to try |
+|---|---|
+| The Mac says the app is damaged or cannot be opened, and there is no **Open Anyway** button | Double-click the app once more, wait a moment, then look in **System Settings → Privacy & Security** again. Still not there? Delete the app from Applications, download the zip again, and repeat Part 1 and Part 2. |
+| The browser does not open | Click **Open web GUI** in the log window. Or type `http://127.0.0.1:8080` into your browser's address bar. If the log window says it picked a different port (for example 8081), use that number instead. |
+| **Find my controller** finds nothing | Make sure your Mac is on the same network as the Lutron system. Check **System Settings → Privacy & Security → Local Network** (the switch for this app must be on). Tick **Also scan the whole network** and try again, or type the controller's address yourself. |
+| Lights show up with numbers instead of names (RadioRA 2) | The app needs the system's "Integration Report" file for the names. Ask the person who set up the system for it, then put its location in **Integration Report path** in Settings and click **Save & reconnect**. |
+| The page says it cannot connect, or the **Lutron** chip at the top is red | Check the Mac's network, then check the address, user name and password in Settings. |
+
+**Getting help.** Ask the person who set this up for you first. They can read the log. In the log window, click **Copy log** and paste it into a message. To report a problem on GitHub, open a new issue at <https://github.com/m3636/Lutron-to-DMX-Bridge/issues>. **Never attach a backup file, your `config.json`, or an export from the Lutron system.** These contain private details such as your installer's contact information, your network addresses and your Lutron login. If the log has anything private in it, remove that before you share it.
+
 ## Start it with a double-click
 Running the app opens a small **log window** (live log, Copy / Save log, Open web GUI, Quit) and opens the **web GUI** in your browser. The first time, before a controller is set up, it opens on the Settings tab. Closing the log window stops the app (minimise it to keep it running). If it is already running, double-clicking again just opens the web GUI. Logs are also kept in a rotating file (`lutron-to-dmx-bridge info` prints where).
 
@@ -23,7 +108,7 @@ Running the app opens a small **log window** (live log, Copy / Save log, Open we
 | **From a checkout, Windows** | Double-click **Launch Lutron To DMX Bridge.bat** (same idea). |
 | **Developer** | `python -m pip install -e . && lutron-to-dmx-bridge-app` (or `python -m lutron_to_dmx_bridge.launcher`; add `--simulator`, `--no-window` for terminal-only, `-v` for debug detail). |
 
-**macOS "unidentified developer" warning.** The app is not signed or notarised, so Gatekeeper blocks a copy downloaded from GitHub. Either right-click the app and choose **Open**, then **Open** again (once), or run `xattr -dr com.apple.quarantine "Lutron To DMX Bridge.app"` in Terminal. On macOS 15 (Sequoia) right-click is no longer enough: try to open it, then go to **System Settings → Privacy & Security** and click **Open Anyway**. An app you build yourself is not blocked. On macOS 15+ it also asks to allow **Local Network** access: say yes, or the controller cannot be found.
+**macOS "unidentified developer" warning.** (Non-technical step-by-step version: [Setting up on a Mac](#setting-up-on-a-mac-step-by-step-guide).) The app is not signed or notarised, so Gatekeeper blocks a copy downloaded from GitHub. Either right-click the app and choose **Open**, then **Open** again (once), or run `xattr -dr com.apple.quarantine "Lutron To DMX Bridge.app"` in Terminal. On macOS 15 (Sequoia) right-click is no longer enough: try to open it, then go to **System Settings → Privacy & Security** and click **Open Anyway**. An app you build yourself is not blocked. On macOS 15+ it also asks to allow **Local Network** access: say yes, or the controller cannot be found.
 
 **tkinter.** The log window needs tkinter. python.org installers include it; Homebrew needs `brew install python-tk@3.12` (and a fresh `.venv`). Without it the launcher still works but logs to the terminal instead of a window, and the build script refuses to build an app without it.
 
