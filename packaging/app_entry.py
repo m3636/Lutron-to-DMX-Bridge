@@ -2,7 +2,7 @@
 
 import sys
 
-from lutron_dmx.launcher import main
+from lutron_to_dmx_bridge.launcher import main
 
 if __name__ == "__main__":
     sys.exit(main())

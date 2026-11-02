@@ -11,9 +11,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from lutron_dmx import discovery
-from lutron_dmx.discovery import arp, mdns, netinfo, scan
-from lutron_dmx.discovery.models import DiscoveredDevice
+from lutron_to_dmx_bridge import discovery
+from lutron_to_dmx_bridge.discovery import arp, mdns, netinfo, scan
+from lutron_to_dmx_bridge.discovery.models import DiscoveredDevice
 
 
 # ---------------------------------------------------------------- ARP parsing
@@ -289,12 +289,12 @@ async def test_rediscover_host_by_name():
 
 # ---------------------------------------------------------------- controller re-finds a moved processor
 async def test_controller_rediscovers_moved_processor(tmp_path, monkeypatch):
-    from lutron_dmx import controller as controller_mod
-    from lutron_dmx.config import AppConfig, DriverConfig
-    from lutron_dmx.controller import Controller
-    from lutron_dmx.drivers.base import DriverError
+    from lutron_to_dmx_bridge import controller as controller_mod
+    from lutron_to_dmx_bridge.config import AppConfig, DriverConfig
+    from lutron_to_dmx_bridge.controller import Controller
+    from lutron_to_dmx_bridge.drivers.base import DriverError
 
-    monkeypatch.setenv("LUTRON_DMX_HOME", str(tmp_path))
+    monkeypatch.setenv("LUTRON_TO_DMX_BRIDGE_HOME", str(tmp_path))
 
     class Driver:
         def __init__(self, cfg):
@@ -321,10 +321,10 @@ async def test_controller_rediscovers_moved_processor(tmp_path, monkeypatch):
 
 
 async def test_controller_does_not_rediscover_without_hostname(monkeypatch, tmp_path):
-    from lutron_dmx.config import AppConfig, DriverConfig
-    from lutron_dmx.controller import Controller
+    from lutron_to_dmx_bridge.config import AppConfig, DriverConfig
+    from lutron_to_dmx_bridge.controller import Controller
 
-    monkeypatch.setenv("LUTRON_DMX_HOME", str(tmp_path))
+    monkeypatch.setenv("LUTRON_TO_DMX_BRIDGE_HOME", str(tmp_path))
 
     class Boom:
         async def connect(self):
@@ -345,7 +345,7 @@ async def test_controller_does_not_rediscover_without_hostname(monkeypatch, tmp_
 
 # ---------------------------------------------------------------- CLI
 def test_cli_discover_prints_table(monkeypatch, capsys):
-    from lutron_dmx import __main__ as cli
+    from lutron_to_dmx_bridge import __main__ as cli
 
     async def fake(**_):
         return [_dev("10.0.0.60", system="RadioRA 3", name="lutron-abc", conf=1.0)]
@@ -353,11 +353,11 @@ def test_cli_discover_prints_table(monkeypatch, capsys):
     monkeypatch.setattr(discovery, "discover", fake)
     cli.main(["discover"])
     out = capsys.readouterr().out
-    assert "10.0.0.60" in out and "RadioRA 3" in out and "lutron-dmx pair 10.0.0.60" in out
+    assert "10.0.0.60" in out and "RadioRA 3" in out and "lutron-to-dmx-bridge pair 10.0.0.60" in out
 
 
 def test_cli_discover_nothing_found_exits_nonzero(monkeypatch, capsys):
-    from lutron_dmx import __main__ as cli
+    from lutron_to_dmx_bridge import __main__ as cli
 
     async def fake(**_):
         return []
@@ -370,11 +370,11 @@ def test_cli_discover_nothing_found_exits_nonzero(monkeypatch, capsys):
 
 
 def test_cli_pair_without_host_discovers_and_remembers_name(monkeypatch, tmp_path):
-    from lutron_dmx import __main__ as cli
-    from lutron_dmx.config import AppConfig
-    from lutron_dmx.drivers import leap
+    from lutron_to_dmx_bridge import __main__ as cli
+    from lutron_to_dmx_bridge.config import AppConfig
+    from lutron_to_dmx_bridge.drivers import leap
 
-    monkeypatch.setenv("LUTRON_DMX_HOME", str(tmp_path))
+    monkeypatch.setenv("LUTRON_TO_DMX_BRIDGE_HOME", str(tmp_path))
     paired = []
 
     async def fake_discover(**_):

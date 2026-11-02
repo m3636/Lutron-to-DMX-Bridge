@@ -10,9 +10,9 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from lutron_dmx.config import AppConfig, DriverConfig
-from lutron_dmx.drivers.base import LutronDriver
-from lutron_dmx.models import Area, Keypad, Schedule, SystemInventory, Zone, ZoneType
+from lutron_to_dmx_bridge.config import AppConfig, DriverConfig
+from lutron_to_dmx_bridge.drivers.base import LutronDriver
+from lutron_to_dmx_bridge.models import Area, Keypad, Schedule, SystemInventory, Zone, ZoneType
 
 
 class FakeDriver(LutronDriver):
@@ -65,15 +65,15 @@ class FakeDriver(LutronDriver):
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
-    monkeypatch.setenv("LUTRON_DMX_HOME", str(tmp_path))
+    monkeypatch.setenv("LUTRON_TO_DMX_BRIDGE_HOME", str(tmp_path))
     return tmp_path
 
 
 @pytest.fixture
 def ctx(home, monkeypatch):
-    from lutron_dmx import controller as controller_mod
-    from lutron_dmx.controller import Controller
-    from lutron_dmx.web.app import create_app
+    from lutron_to_dmx_bridge import controller as controller_mod
+    from lutron_to_dmx_bridge.controller import Controller
+    from lutron_to_dmx_bridge.web.app import create_app
 
     # reconfigure_driver builds drivers through create_driver; keep it in-test.
     monkeypatch.setattr(controller_mod, "create_driver", lambda cfg: FakeDriver(cfg))
@@ -106,7 +106,7 @@ def test_page_assets_are_cache_busted_and_revalidated(ctx):
     import hashlib
     import re
 
-    from lutron_dmx.web.app import STATIC_DIR
+    from lutron_to_dmx_bridge.web.app import STATIC_DIR
 
     client, _, _ = ctx
     page = client.get("/").text
@@ -147,7 +147,7 @@ def test_status(ctx):
 def test_alerts_are_counted_and_can_be_cleared(ctx):
     client, _, _ = ctx
     client.post("/api/alerts/clear")
-    logging.getLogger("lutron_dmx.test_web").warning("repeater is slow")
+    logging.getLogger("lutron_to_dmx_bridge.test_web").warning("repeater is slow")
     alerts = client.get("/api/status").json()["alerts"]
     assert alerts["warnings"] == 1 and alerts["recent"][0]["message"] == "repeater is slow"
     assert client.post("/api/alerts/clear").json() == {"ok": True}
@@ -328,7 +328,7 @@ def test_websocket_level_push(ctx):
 
 
 def test_websocket_status_is_not_starved_by_level_traffic(ctx, monkeypatch):
-    from lutron_dmx.web import app as app_mod
+    from lutron_to_dmx_bridge.web import app as app_mod
 
     monkeypatch.setattr(app_mod, "STATUS_INTERVAL", 0.2)
     client, ctl, driver = ctx
@@ -374,9 +374,9 @@ def test_websocket_follows_driver_swap(ctx):
 
 
 def test_discover_endpoint_uses_injected_function(home, monkeypatch):
-    from lutron_dmx.controller import Controller
-    from lutron_dmx.discovery.models import DiscoveredDevice
-    from lutron_dmx.web.app import create_app
+    from lutron_to_dmx_bridge.controller import Controller
+    from lutron_to_dmx_bridge.discovery.models import DiscoveredDevice
+    from lutron_to_dmx_bridge.web.app import create_app
 
     seen = []
 
@@ -397,8 +397,8 @@ def test_discover_endpoint_uses_injected_function(home, monkeypatch):
 
 
 def test_discover_endpoint_reports_failure(home):
-    from lutron_dmx.controller import Controller
-    from lutron_dmx.web.app import create_app
+    from lutron_to_dmx_bridge.controller import Controller
+    from lutron_to_dmx_bridge.web.app import create_app
 
     async def broken(*, scan):
         raise RuntimeError("Local Network access blocked")
@@ -423,10 +423,10 @@ def test_driver_settings_keep_and_replace_hostname(ctx):
 
 
 def test_pair_untrusted_cert_returns_409_then_opt_in_pairs(home, monkeypatch):
-    from lutron_dmx.controller import Controller
-    from lutron_dmx.drivers import leap
-    from lutron_dmx.drivers.leap_pairing import UntrustedControllerCert
-    from lutron_dmx.web.app import create_app
+    from lutron_to_dmx_bridge.controller import Controller
+    from lutron_to_dmx_bridge.drivers import leap
+    from lutron_to_dmx_bridge.drivers.leap_pairing import UntrustedControllerCert
+    from lutron_to_dmx_bridge.web.app import create_app
 
     calls = []
 

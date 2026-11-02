@@ -1,4 +1,4 @@
-"""The version has one source (lutron_dmx.__version__) and a helper to bump it."""
+"""The version has one source (lutron_to_dmx_bridge.__version__) and a helper to bump it."""
 
 import importlib.util
 import re
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-import lutron_dmx
+import lutron_to_dmx_bridge
 
 ROOT = Path(__file__).resolve().parent.parent
 spec = importlib.util.spec_from_file_location("bump_version", ROOT / "tools" / "bump_version.py")
@@ -15,12 +15,12 @@ spec.loader.exec_module(bump)
 
 
 def test_version_is_plain_semver():
-    assert re.fullmatch(r"\d+\.\d+\.\d+", lutron_dmx.__version__)
+    assert re.fullmatch(r"\d+\.\d+\.\d+", lutron_to_dmx_bridge.__version__)
 
 
 def test_package_metadata_reads_the_same_version():
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert 'dynamic = ["version"]' in pyproject and "lutron_dmx.__version__" in pyproject
+    assert 'dynamic = ["version"]' in pyproject and "lutron_to_dmx_bridge.__version__" in pyproject
 
 
 @pytest.mark.parametrize("step,expected", [

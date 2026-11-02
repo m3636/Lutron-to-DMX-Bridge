@@ -21,8 +21,8 @@ from cryptography.x509.oid import NameOID
 
 from pylutron_caseta.assets import LAP_CA_PEM
 
-from lutron_dmx.drivers import DriverError, leap, leap_pairing
-from lutron_dmx.drivers.leap_pairing import UntrustedControllerCert, async_pair, describe_cert
+from lutron_to_dmx_bridge.drivers import DriverError, leap, leap_pairing
+from lutron_to_dmx_bridge.drivers.leap_pairing import UntrustedControllerCert, async_pair, describe_cert
 
 NOW = datetime.datetime.now(datetime.timezone.utc)
 
@@ -86,7 +86,7 @@ def _pairing_handler(ca: Ca, press_button: bool = True):
             csr = x509.load_pem_x509_csr(req["Body"]["Parameters"]["CSR"].encode())
             await _send(writer, {"Header": {"ClientTag": req["Header"]["ClientTag"]},
                                  "Body": {"SigningResult": {
-                                     "Certificate": _pem(ca.sign_pub("lutron-dmx", csr.public_key())),
+                                     "Certificate": _pem(ca.sign_pub("lutron-to-dmx-bridge", csr.public_key())),
                                      "RootCertificate": ca.pem}}})
             await asyncio.sleep(0.1)
         except (ConnectionError, ssl.SSLError):
@@ -142,7 +142,7 @@ async def test_unknown_ca_pairs_when_user_opts_in(tmp_path, private_ca, caplog):
     ps, pp = await _serve(_pairing_handler(private_ca), private_ca.server_context(tmp_path))
     ls, lp = await _serve(_leap_handler(), private_ca.server_context(tmp_path))
     async with ps, ls:
-        with caplog.at_level("INFO", logger="lutron_dmx.drivers.leap_pairing"):
+        with caplog.at_level("INFO", logger="lutron_to_dmx_bridge.drivers.leap_pairing"):
             data = await _pair(pp, lp, trust_presented_cert=True)
     assert data["ca"] == private_ca.pem
     assert "BEGIN CERTIFICATE" in data["cert"] and "PRIVATE KEY" in data["key"]
@@ -155,7 +155,7 @@ async def test_prefers_verified_stage_over_unverified(tmp_path, private_ca, monk
     ps, pp = await _serve(_pairing_handler(private_ca), private_ca.server_context(tmp_path))
     ls, lp = await _serve(_leap_handler(), private_ca.server_context(tmp_path))
     async with ps, ls:
-        with caplog.at_level("INFO", logger="lutron_dmx.drivers.leap_pairing"):
+        with caplog.at_level("INFO", logger="lutron_to_dmx_bridge.drivers.leap_pairing"):
             await _pair(pp, lp, trust_presented_cert=True)
     assert "trust: test CA" in caplog.text and "unverified" not in caplog.text
 

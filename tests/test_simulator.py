@@ -2,10 +2,10 @@ import asyncio
 
 import pytest
 
-from lutron_dmx.config import DriverConfig
-from lutron_dmx.drivers import DriverError, create_driver
-from lutron_dmx.drivers.simulator import SimulatorDriver
-from lutron_dmx.models import ZoneType
+from lutron_to_dmx_bridge.config import DriverConfig
+from lutron_to_dmx_bridge.drivers import DriverError, create_driver
+from lutron_to_dmx_bridge.drivers.simulator import SimulatorDriver
+from lutron_to_dmx_bridge.models import ZoneType
 
 
 @pytest.fixture

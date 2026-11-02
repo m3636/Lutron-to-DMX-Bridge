@@ -1,6 +1,6 @@
 # Third-party software
 
-Lutron DMX is built on the open-source packages below. Each is used under its own license; the license
+Lutron To DMX Bridge is built on the open-source packages below. Each is used under its own license; the license
 texts ship inside the installed packages. This list names the license of each package at the time of writing.
 
 | Package | License | Project |

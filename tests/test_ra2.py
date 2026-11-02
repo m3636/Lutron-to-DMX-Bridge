@@ -4,12 +4,12 @@ import json
 
 import pytest
 
-from lutron_dmx.config import DriverConfig
-from lutron_dmx.drivers import DriverError, create_driver
-from lutron_dmx.drivers.ra2 import (RA2Driver, format_fade, format_level,
+from lutron_to_dmx_bridge.config import DriverConfig
+from lutron_to_dmx_bridge.drivers import DriverError, create_driver
+from lutron_to_dmx_bridge.drivers.ra2 import (RA2Driver, format_fade, format_level,
                                     output_type_to_zone_type, parse_db_xml)
-from lutron_dmx.drivers.simulator import SAMPLE_DATA_DIR
-from lutron_dmx.models import ZoneType
+from lutron_to_dmx_bridge.drivers.simulator import SAMPLE_DATA_DIR
+from lutron_to_dmx_bridge.models import ZoneType
 
 SAMPLE = SAMPLE_DATA_DIR / "ra2_sample_dbxml.xml"
 
@@ -302,9 +302,9 @@ def test_parse_real_ra2_timeclock_events():
 
 
 async def test_dmx_ramp_over_telnet_is_budgeted_and_pipelined(driver, repeater):
-    from lutron_dmx.config import AppConfig, DmxConfig
-    from lutron_dmx.controller import Controller
-    from lutron_dmx.dmx.engine import DmxEngine, auto_assign
+    from lutron_to_dmx_bridge.config import AppConfig, DmxConfig
+    from lutron_to_dmx_bridge.controller import Controller
+    from lutron_to_dmx_bridge.dmx.engine import DmxEngine, auto_assign
 
     zone_ids = [z.id for z in driver.zones()]
     cfg = AppConfig(dmx=DmxConfig(enabled=True, max_commands_per_s=20.0,

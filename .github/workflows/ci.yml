@@ -55,7 +55,7 @@ jobs:
         continue-on-error: true
         timeout-minutes: 3
         env:
-          LUTRON_DMX_TK_TESTS: "1"
+          LUTRON_TO_DMX_BRIDGE_TK_TESTS: "1"
         run: python -m pytest tests/test_launcher.py -q
 
   build:
@@ -79,9 +79,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         run: |
-          VERSION=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' lutron_dmx/__init__.py)
+          VERSION=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' lutron_to_dmx_bridge/__init__.py)
           if [ "v$VERSION" != "$GITHUB_REF_NAME" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME does not match __version__ $VERSION in lutron_dmx/__init__.py"
+            echo "::error::Tag $GITHUB_REF_NAME does not match __version__ $VERSION in lutron_to_dmx_bridge/__init__.py"
             exit 1
           fi
       - name: Remove stale build output
@@ -92,8 +92,8 @@ jobs:
       - run: python packaging/build.py
       - uses: actions/upload-artifact@v4
         with:
-          name: LutronDMX-${{ matrix.os }}
-          path: dist/LutronDMX-*-${{ matrix.os }}.zip
+          name: LutronToDMXBridge-${{ matrix.os }}
+          path: dist/LutronToDMXBridge-*-${{ matrix.os }}.zip
           if-no-files-found: error
 
   # A vX.Y.Z tag (pushed by hand, or built by the "New release" workflow) publishes a GitHub Release
@@ -107,7 +107,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: LutronDMX-*
+          pattern: LutronToDMXBridge-*
           merge-multiple: true
           path: dist
       - name: Create or update the release
@@ -117,16 +117,16 @@ jobs:
           EXTRA_NOTES: ${{ inputs.release_notes }}
         run: |
           cd dist
-          sha256sum LutronDMX-*.zip > SHA256SUMS.txt
+          sha256sum LutronToDMXBridge-*.zip > SHA256SUMS.txt
           cat SHA256SUMS.txt
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             # Re-run: refresh the files but keep any notes that were edited by hand.
-            gh release upload "$GITHUB_REF_NAME" LutronDMX-*.zip SHA256SUMS.txt --clobber
+            gh release upload "$GITHUB_REF_NAME" LutronToDMXBridge-*.zip SHA256SUMS.txt --clobber
           else
             # The notes are the optional text, then GitHub's list of PRs merged since the previous release.
             gh api "repos/$GH_REPO/releases/generate-notes" -f tag_name="$GITHUB_REF_NAME" --jq .body > generated.md
             if [ -n "$EXTRA_NOTES" ]; then printf '%s\n\n' "$EXTRA_NOTES" > notes.md; else : > notes.md; fi
             cat generated.md >> notes.md
-            gh release create "$GITHUB_REF_NAME" LutronDMX-*.zip SHA256SUMS.txt \
-              --verify-tag --title "Lutron DMX ${GITHUB_REF_NAME#v}" --notes-file notes.md
+            gh release create "$GITHUB_REF_NAME" LutronToDMXBridge-*.zip SHA256SUMS.txt \
+              --verify-tag --title "Lutron To DMX Bridge ${GITHUB_REF_NAME#v}" --notes-file notes.md
           fi

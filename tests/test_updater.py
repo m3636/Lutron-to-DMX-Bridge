@@ -23,9 +23,9 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from lutron_dmx import updater as upd
-from lutron_dmx.config import AppConfig, DriverConfig
-from lutron_dmx.updater import InstallInfo, UpdateError, Updater
+from lutron_to_dmx_bridge import updater as upd
+from lutron_to_dmx_bridge.config import AppConfig, DriverConfig
+from lutron_to_dmx_bridge.updater import InstallInfo, UpdateError, Updater
 
 REPO = "owner/repo"
 WIN = "win32"
@@ -78,7 +78,7 @@ class FakeGitHub:
     def publish(self, version: str, platform: str = WIN, *, zip_bytes: bytes | None = None, sums: str | None = None,
                 with_sums: bool = True, with_zip: bool = True, **extra) -> bytes:
         os_name = upd.PLATFORM_LABEL[platform]
-        name = f"LutronDMX-{version}-{os_name}.zip"
+        name = f"LutronToDMXBridge-{version}-{os_name}.zip"
         data = zip_bytes if zip_bytes is not None else make_release_zip(platform, version)
         digest = __import__("hashlib").sha256(data).hexdigest()
         listing = sums if sums is not None else f"{digest}  {name}\n"
@@ -121,15 +121,15 @@ def gh():
 def home(tmp_path, monkeypatch):
     h = tmp_path / "home"
     h.mkdir()
-    monkeypatch.setenv("LUTRON_DMX_HOME", str(h))
+    monkeypatch.setenv("LUTRON_TO_DMX_BRIDGE_HOME", str(h))
     return h
 
 
 def make_updater(gh, home, tmp_path, *, current="0.3.0", kind="windows-exe", can_auto=True, **kw) -> Updater:
-    app = tmp_path / "apps" / "Lutron DMX"
+    app = tmp_path / "apps" / "Lutron To DMX Bridge"
     if kind == "windows-exe" and not app.exists():
         app.mkdir(parents=True)
-        (app / "Lutron DMX.exe").write_text("old")
+        (app / "Lutron To DMX Bridge.exe").write_text("old")
     install = InstallInfo(kind, "Windows app", can_auto, "do it by hand", app)
     kw.setdefault("smoke_test", False)
     return Updater(AppConfig(), repo=REPO, api_base=gh.base, web_base=gh.base, current=current, install=install,
@@ -155,8 +155,8 @@ def test_is_newer_compares_numbers_not_strings():
 
 def test_parse_sha256sums():
     h1, h2 = "a" * 64, "B" * 64
-    text = f"{h1}  LutronDMX-1.0.0-macOS.zip\n{h2} *LutronDMX-1.0.0-Windows.zip\nnot a line\n"
-    assert upd.parse_sha256sums(text) == {"LutronDMX-1.0.0-macOS.zip": h1, "LutronDMX-1.0.0-Windows.zip": h2.lower()}
+    text = f"{h1}  LutronToDMXBridge-1.0.0-macOS.zip\n{h2} *LutronToDMXBridge-1.0.0-Windows.zip\nnot a line\n"
+    assert upd.parse_sha256sums(text) == {"LutronToDMXBridge-1.0.0-macOS.zip": h1, "LutronToDMXBridge-1.0.0-Windows.zip": h2.lower()}
 
 
 # ---------------------------------------------------------------------------
@@ -172,7 +172,7 @@ async def test_check_finds_a_newer_release(gh, home, tmp_path):
     assert state["notes_url"].endswith("/releases/tag/v0.4.0") and state["check_error"] is None
     path, headers = gh.requests[0]
     assert path == f"/repos/{REPO}/releases/latest"
-    assert headers["user-agent"].startswith("LutronDMX/") and "authorization" not in headers
+    assert headers["user-agent"].startswith("LutronToDMXBridge/") and "authorization" not in headers
 
 
 async def test_same_or_older_release_is_not_an_update(gh, home, tmp_path):
@@ -191,7 +191,7 @@ async def test_private_repository_is_quiet(gh, home, tmp_path, caplog):
     state = u.public_state()
     assert not state["available"] and "private" in state["check_error"]
     # the reason is logged once, not on every check
-    assert len([r for r in caplog.records if r.name == "lutron_dmx.updater"]) == 1
+    assert len([r for r in caplog.records if r.name == "lutron_to_dmx_bridge.updater"]) == 1
     assert not [r for r in caplog.records if r.levelname in ("WARNING", "ERROR")]
 
 
@@ -326,7 +326,7 @@ async def test_download_verifies_checksum(gh, home, tmp_path):
 
 
 async def test_corrupted_download_is_rejected(gh, home, tmp_path):
-    gh.publish("0.4.0", sums=f"{'0' * 64}  LutronDMX-0.4.0-Windows.zip\n")
+    gh.publish("0.4.0", sums=f"{'0' * 64}  LutronToDMXBridge-0.4.0-Windows.zip\n")
     u = make_updater(gh, home, tmp_path)
     rel = await u.check()
     work = tmp_path / "work"
@@ -369,15 +369,15 @@ def test_unpack_release(tmp_path):
     z = tmp_path / "r.zip"
     z.write_bytes(make_release_zip(WIN, "0.4.0"))
     staged = upd.unpack_release(z, tmp_path / "out", WIN)
-    assert staged.name == "Lutron DMX" and (staged / "Lutron DMX.exe").read_text() == "new-0.4.0"
+    assert staged.name == "Lutron To DMX Bridge" and (staged / "Lutron To DMX Bridge.exe").read_text() == "new-0.4.0"
     assert (staged / "data" / "readme.txt").exists()
 
 
 @pytest.mark.parametrize("names,message", [
-    (["Lutron DMX/Lutron DMX.exe", "Lutron DMX/../../evil.txt"], "unexpected file"),
-    (["/etc/passwd", "Lutron DMX/Lutron DMX.exe"], "unexpected file"),
-    (["Other/Lutron DMX.exe"], "unexpected file"),
-    (["Lutron DMX/readme.txt"], "missing"),
+    (["Lutron To DMX Bridge/Lutron To DMX Bridge.exe", "Lutron To DMX Bridge/../../evil.txt"], "unexpected file"),
+    (["/etc/passwd", "Lutron To DMX Bridge/Lutron To DMX Bridge.exe"], "unexpected file"),
+    (["Other/Lutron To DMX Bridge.exe"], "unexpected file"),
+    (["Lutron To DMX Bridge/readme.txt"], "missing"),
 ])
 def test_unpack_rejects_odd_archives(tmp_path, names, message):
     z = tmp_path / "r.zip"
@@ -392,9 +392,9 @@ def test_unpack_rejects_odd_archives(tmp_path, names, message):
 def test_unpack_accepts_the_resource_fork_folder_ditto_adds(tmp_path):
     z = tmp_path / "r.zip"
     with zipfile.ZipFile(z, "w") as zf:
-        zf.writestr("Lutron DMX/Lutron DMX.exe", "x")
-        zf.writestr("__MACOSX/Lutron DMX/._Lutron DMX.exe", "x")
-    assert upd.unpack_release(z, tmp_path / "out", WIN).name == "Lutron DMX"
+        zf.writestr("Lutron To DMX Bridge/Lutron To DMX Bridge.exe", "x")
+        zf.writestr("__MACOSX/Lutron To DMX Bridge/._Lutron To DMX Bridge.exe", "x")
+    assert upd.unpack_release(z, tmp_path / "out", WIN).name == "Lutron To DMX Bridge"
 
 
 def test_unpack_rejects_a_non_zip(tmp_path):
@@ -416,16 +416,16 @@ def fake_exe(path: Path, script: str) -> Path:
 @pytest.mark.skipif(sys.platform == "win32", reason="uses a shell script as the fake app")
 class TestSelfCheck:
     def test_pass(self, tmp_path):
-        exe = fake_exe(tmp_path / "app", 'printf "Lutron DMX 0.4.0 on Python 3.12\\nok    server\\nPASS\\n" > "$2"\n')
+        exe = fake_exe(tmp_path / "app", 'printf "Lutron To DMX Bridge 0.4.0 on Python 3.12\\nok    server\\nPASS\\n" > "$2"\n')
         upd.run_self_check(exe, "0.4.0", tmp_path)
 
     def test_wrong_version(self, tmp_path):
-        exe = fake_exe(tmp_path / "app", 'printf "Lutron DMX 0.3.0 on Python\\nPASS\\n" > "$2"\n')
+        exe = fake_exe(tmp_path / "app", 'printf "Lutron To DMX Bridge 0.3.0 on Python\\nPASS\\n" > "$2"\n')
         with pytest.raises(UpdateError, match="failed its start-up check"):
             upd.run_self_check(exe, "0.4.0", tmp_path)
 
     def test_failed_check_reports_why(self, tmp_path):
-        exe = fake_exe(tmp_path / "app", 'printf "Lutron DMX 0.4.0 on Python\\nFAIL  tkinter import: boom\\nFAILED\\n" > "$2"\nexit 1\n')
+        exe = fake_exe(tmp_path / "app", 'printf "Lutron To DMX Bridge 0.4.0 on Python\\nFAIL  tkinter import: boom\\nFAILED\\n" > "$2"\nexit 1\n')
         with pytest.raises(UpdateError, match="tkinter import: boom"):
             upd.run_self_check(exe, "0.4.0", tmp_path)
 
@@ -478,10 +478,10 @@ async def test_apply_downloads_stages_and_hands_over(gh, home, tmp_path, spawned
     plan = json.loads(Path(plan_path).read_text())
     assert plan["pid"] == os.getpid() and plan["to_version"] == "0.4.0" and plan["from_version"] == "0.3.0"
     assert plan["target"] == str(u.install.target) and plan["staged"] == str(staged_exe.parent)
-    assert plan["backup"].endswith(str(Path("previous") / "0.3.0" / "Lutron DMX"))
-    assert plan["relaunch"] == [str(u.install.target / "Lutron DMX.exe"), "--no-browser"]
+    assert plan["backup"].endswith(str(Path("previous") / "0.3.0" / "Lutron To DMX Bridge"))
+    assert plan["relaunch"] == [str(u.install.target / "Lutron To DMX Bridge.exe"), "--no-browser"]
     # the running app was not touched yet, and the settings folder only gained the updates folder
-    assert (u.install.target / "Lutron DMX.exe").read_text() == "old"
+    assert (u.install.target / "Lutron To DMX Bridge.exe").read_text() == "old"
     assert not (home / "config.json").exists()
 
 
@@ -516,7 +516,7 @@ async def test_apply_refuses_when_the_install_cannot_update_itself(gh, home, tmp
 
 
 async def test_bad_checksum_leaves_everything_alone(gh, home, tmp_path, spawned):
-    gh.publish("0.4.0", sums=f"{'0' * 64}  LutronDMX-0.4.0-Windows.zip\n")
+    gh.publish("0.4.0", sums=f"{'0' * 64}  LutronToDMXBridge-0.4.0-Windows.zip\n")
     u = make_updater(gh, home, tmp_path)
     exits = []
     u.request_exit = lambda: exits.append(1)
@@ -525,7 +525,7 @@ async def test_bad_checksum_leaves_everything_alone(gh, home, tmp_path, spawned)
     await wait_phase(u, "error", "restarting")
     assert u.phase == "error" and "checksum" in u.message
     assert not spawned and not exits and not u._busy
-    assert (u.install.target / "Lutron DMX.exe").read_text() == "old"
+    assert (u.install.target / "Lutron To DMX Bridge.exe").read_text() == "old"
     # and it can be tried again
     gh.publish("0.4.0")
     await u.apply("0.4.0", [], True)
@@ -561,21 +561,21 @@ async def test_failed_self_check_blocks_the_update(gh, home, tmp_path, spawned, 
 # the helper
 # ---------------------------------------------------------------------------
 def make_plan(tmp_path, pid=None, *, staged_exe=True) -> dict:
-    target = tmp_path / "apps" / "Lutron DMX"
+    target = tmp_path / "apps" / "Lutron To DMX Bridge"
     target.mkdir(parents=True, exist_ok=True)
-    (target / "Lutron DMX.exe").write_text("old")
+    (target / "Lutron To DMX Bridge.exe").write_text("old")
     (target / "keep.txt").write_text("old data")
-    staged = tmp_path / "staging" / "Lutron DMX"
+    staged = tmp_path / "staging" / "Lutron To DMX Bridge"
     staged.mkdir(parents=True)
     if staged_exe:
-        (staged / "Lutron DMX.exe").write_text("new")
+        (staged / "Lutron To DMX Bridge.exe").write_text("new")
         (staged / "extra.txt").write_text("new data")
     if pid is None:
         p = subprocess.Popen([sys.executable, "-c", "pass"])
         p.wait()
         pid = p.pid  # a process that has already exited
     plan = {"pid": pid, "platform": WIN, "from_version": "0.3.0", "to_version": "0.4.0", "target": str(target),
-            "staged": str(staged), "backup": str(tmp_path / "updates" / "previous" / "0.3.0" / "Lutron DMX"),
+            "staged": str(staged), "backup": str(tmp_path / "updates" / "previous" / "0.3.0" / "Lutron To DMX Bridge"),
             "result": str(tmp_path / "update-result.json"), "log": str(tmp_path / "logs" / "update.log"),
             "relaunch": ["relaunch", "--no-browser"], "wait_s": 5}
     path = tmp_path / "plan.json"
@@ -589,10 +589,10 @@ def test_helper_swaps_in_the_new_version_and_keeps_the_old_one(tmp_path):
     launched = []
     assert upd.run_helper(plan["_path"], launch=launched.append) == 0
     target = Path(plan["target"])
-    assert (target / "Lutron DMX.exe").read_text() == "new" and (target / "extra.txt").exists()
+    assert (target / "Lutron To DMX Bridge.exe").read_text() == "new" and (target / "extra.txt").exists()
     assert not (target / "keep.txt").exists()
     backup = Path(plan["backup"])
-    assert (backup / "Lutron DMX.exe").read_text() == "old" and (backup / "keep.txt").exists()
+    assert (backup / "Lutron To DMX Bridge.exe").read_text() == "old" and (backup / "keep.txt").exists()
     assert launched == [["relaunch", "--no-browser"]]
     result = json.loads(Path(plan["result"]).read_text())
     assert result["ok"] and result["from_version"] == "0.3.0" and result["to_version"] == "0.4.0"
@@ -611,7 +611,7 @@ def test_helper_rolls_back_when_the_copy_fails(tmp_path, monkeypatch):
     launched = []
     assert upd.run_helper(plan["_path"], launch=launched.append) == 1
     target = Path(plan["target"])
-    assert (target / "Lutron DMX.exe").read_text() == "old" and (target / "keep.txt").exists()
+    assert (target / "Lutron To DMX Bridge.exe").read_text() == "old" and (target / "keep.txt").exists()
     assert not (target / "half.txt").exists()
     assert launched == [["relaunch", "--no-browser"]]  # the restored old app is started again
     result = json.loads(Path(plan["result"]).read_text())
@@ -622,7 +622,7 @@ def test_helper_rejects_a_staged_copy_without_an_executable(tmp_path):
     plan = make_plan(tmp_path, staged_exe=False)
     launched = []
     assert upd.run_helper(plan["_path"], launch=launched.append) == 1
-    assert (Path(plan["target"]) / "Lutron DMX.exe").read_text() == "old"
+    assert (Path(plan["target"]) / "Lutron To DMX Bridge.exe").read_text() == "old"
     assert not json.loads(Path(plan["result"]).read_text())["ok"]
     assert launched
 
@@ -634,14 +634,14 @@ def test_helper_does_nothing_if_the_old_app_never_quits(tmp_path):
     Path(plan["_path"]).write_text(json.dumps(data))
     launched = []
     assert upd.run_helper(plan["_path"], launch=launched.append) == 1
-    assert (Path(plan["target"]) / "Lutron DMX.exe").read_text() == "old"
+    assert (Path(plan["target"]) / "Lutron To DMX Bridge.exe").read_text() == "old"
     assert not launched and not Path(plan["backup"]).exists()
     assert "did not close" in json.loads(Path(plan["result"]).read_text())["error"]
 
 
 def test_only_one_previous_version_is_kept(tmp_path):
     plan = make_plan(tmp_path)
-    old_backup = Path(plan["backup"]).parent.parent / "0.2.0" / "Lutron DMX"
+    old_backup = Path(plan["backup"]).parent.parent / "0.2.0" / "Lutron To DMX Bridge"
     old_backup.mkdir(parents=True)
     (old_backup / "x").write_text("ancient")
     assert upd.run_helper(plan["_path"], launch=lambda argv: None) == 0
@@ -649,7 +649,7 @@ def test_only_one_previous_version_is_kept(tmp_path):
 
 
 def test_helper_is_reachable_through_the_launcher(tmp_path, monkeypatch):
-    from lutron_dmx import launcher
+    from lutron_to_dmx_bridge import launcher
 
     seen = []
     monkeypatch.setattr(upd, "run_helper", lambda p: seen.append(p) or 0)
@@ -686,8 +686,8 @@ def test_result_is_reported_once_after_restart(home, caplog):
 # which kind of install is this?
 # ---------------------------------------------------------------------------
 def test_detect_macos_app(tmp_path):
-    app = tmp_path / "Applications" / "Lutron DMX.app"
-    exe = app / "Contents" / "MacOS" / "Lutron DMX"
+    app = tmp_path / "Applications" / "Lutron To DMX Bridge.app"
+    exe = app / "Contents" / "MacOS" / "Lutron To DMX Bridge"
     exe.parent.mkdir(parents=True)
     exe.write_text("x")
     info = upd.detect_install(str(exe), frozen=True, platform="darwin")
@@ -695,8 +695,8 @@ def test_detect_macos_app(tmp_path):
 
 
 def test_detect_macos_translocated_app_asks_to_move_it(tmp_path):
-    app = tmp_path / "AppTranslocation" / "ABC" / "d" / "Lutron DMX.app"
-    exe = app / "Contents" / "MacOS" / "Lutron DMX"
+    app = tmp_path / "AppTranslocation" / "ABC" / "d" / "Lutron To DMX Bridge.app"
+    exe = app / "Contents" / "MacOS" / "Lutron To DMX Bridge"
     exe.parent.mkdir(parents=True)
     info = upd.detect_install(str(exe), frozen=True, platform="darwin")
     assert info.kind == "macos-app" and not info.can_auto and "Applications" in info.manual
@@ -704,20 +704,20 @@ def test_detect_macos_translocated_app_asks_to_move_it(tmp_path):
 
 @pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="root can write anywhere")
 def test_detect_unwritable_install_falls_back_to_instructions(tmp_path):
-    folder = tmp_path / "ro" / "Lutron DMX"
+    folder = tmp_path / "ro" / "Lutron To DMX Bridge"
     folder.mkdir(parents=True)
     (tmp_path / "ro").chmod(0o555)
     try:
-        info = upd.detect_install(str(folder / "Lutron DMX.exe"), frozen=True, platform="win32")
+        info = upd.detect_install(str(folder / "Lutron To DMX Bridge.exe"), frozen=True, platform="win32")
     finally:
         (tmp_path / "ro").chmod(0o755)
     assert info.kind == "windows-exe" and not info.can_auto and "by hand" in info.manual
 
 
 def test_detect_windows_app(tmp_path):
-    folder = tmp_path / "Lutron DMX"
+    folder = tmp_path / "Lutron To DMX Bridge"
     folder.mkdir()
-    info = upd.detect_install(str(folder / "Lutron DMX.exe"), frozen=True, platform="win32")
+    info = upd.detect_install(str(folder / "Lutron To DMX Bridge.exe"), frozen=True, platform="win32")
     assert info.kind == "windows-exe" and info.can_auto and info.target == folder
 
 
@@ -746,14 +746,14 @@ def checkout(tmp_path):
     git(tmp_path, "init", "--bare", "-b", "main", str(origin))
     seed = tmp_path / "seed"
     git(tmp_path, "clone", str(origin), str(seed))
-    (seed / "lutron_dmx").mkdir()
-    (seed / "lutron_dmx" / "__init__.py").write_text('__version__ = "0.3.0"\n')
+    (seed / "lutron_to_dmx_bridge").mkdir()
+    (seed / "lutron_to_dmx_bridge" / "__init__.py").write_text('__version__ = "0.3.0"\n')
     git(seed, "add", "-A")
     git(seed, "commit", "-m", "v0.3.0")
     git(seed, "push", "origin", "HEAD:main")
     root = tmp_path / "work"
     git(tmp_path, "clone", str(origin), str(root))
-    (seed / "lutron_dmx" / "__init__.py").write_text('__version__ = "0.4.0"\n')
+    (seed / "lutron_to_dmx_bridge" / "__init__.py").write_text('__version__ = "0.4.0"\n')
     git(seed, "commit", "-am", "Release v0.4.0")
     git(seed, "tag", "v0.4.0")
     git(seed, "push", "origin", "HEAD:main", "v0.4.0")
@@ -776,7 +776,7 @@ async def test_git_checkout_is_fast_forwarded_to_the_release(checkout, gh, home,
     assert await u.apply("0.4.0", [], True) == {"started": True}
     await wait_phase(u, "installed", "error")
     assert u.phase == "installed", u.message
-    assert 'version__ = "0.4.0"' in (checkout / "lutron_dmx" / "__init__.py").read_text()
+    assert 'version__ = "0.4.0"' in (checkout / "lutron_to_dmx_bridge" / "__init__.py").read_text()
     assert installs == [checkout]
 
 
@@ -791,7 +791,7 @@ async def test_git_checkout_is_left_alone_when_unsafe(checkout, gh, home, monkey
     await u.apply("0.4.0", [], True)
     await wait_phase(u, "installed", "error")
     assert u.phase == "error" and message in u.message and not installs
-    assert 'version__ = "0.3.0"' in (checkout / "lutron_dmx" / "__init__.py").read_text()
+    assert 'version__ = "0.3.0"' in (checkout / "lutron_to_dmx_bridge" / "__init__.py").read_text()
 
 
 async def test_git_checkout_with_diverged_history_is_not_merged(checkout, gh, home, monkeypatch):
@@ -809,8 +809,8 @@ async def test_git_checkout_with_diverged_history_is_not_merged(checkout, gh, ho
 # ---------------------------------------------------------------------------
 @pytest.fixture
 def web(gh, home, tmp_path, spawned):
-    from lutron_dmx.controller import Controller
-    from lutron_dmx.web.app import create_app
+    from lutron_to_dmx_bridge.controller import Controller
+    from lutron_to_dmx_bridge.web.app import create_app
     from tests.test_web import FakeDriver
 
     gh.publish("0.4.0")
@@ -849,7 +849,7 @@ def test_dismiss_and_settings_endpoints(web):
 def test_apply_endpoint_asks_when_a_schedule_set_is_active(web, spawned):
     client, ctl, u = web
     client.post("/api/update/check")
-    from lutron_dmx.config import ActiveScheduleSet
+    from lutron_to_dmx_bridge.config import ActiveScheduleSet
 
     ctl.config.active_schedule_set = ActiveScheduleSet(set_id="x", set_name="Performance mode", activated_at="t")
     st = client.get("/api/status").json()["update"]
@@ -868,8 +868,8 @@ def test_apply_endpoint_reports_a_refusal_as_409(web):
 
 
 def test_without_an_updater_the_app_stays_offline(home):
-    from lutron_dmx.controller import Controller
-    from lutron_dmx.web.app import create_app
+    from lutron_to_dmx_bridge.controller import Controller
+    from lutron_to_dmx_bridge.web.app import create_app
     from tests.test_web import FakeDriver
 
     cfg = AppConfig()
@@ -892,7 +892,7 @@ def test_the_gui_has_the_banner_and_settings(web):
 # the log window notice
 # ---------------------------------------------------------------------------
 async def test_log_window_notice(gh, home, tmp_path):
-    from lutron_dmx.launcher import ServerThread, bind_socket
+    from lutron_to_dmx_bridge.launcher import ServerThread, bind_socket
 
     gh.publish("0.4.0")
     u = make_updater(gh, home, tmp_path)
@@ -916,26 +916,26 @@ async def test_log_window_notice(gh, home, tmp_path):
 # platform details
 # ---------------------------------------------------------------------------
 def test_platform_layout_and_relaunch_commands():
-    app = Path("/Applications/Lutron DMX.app")
-    assert upd.executable_in(app, "darwin") == app / "Contents" / "MacOS" / "Lutron DMX"
+    app = Path("/Applications/Lutron To DMX Bridge.app")
+    assert upd.executable_in(app, "darwin") == app / "Contents" / "MacOS" / "Lutron To DMX Bridge"
     assert upd.relaunch_command(app, "darwin") == ["open", str(app), "--args", "--no-browser"]
-    folder = Path("C:/Apps/Lutron DMX")
-    assert upd.executable_in(folder, "win32") == folder / "Lutron DMX.exe"
-    assert upd.relaunch_command(folder, "win32") == [str(folder / "Lutron DMX.exe"), "--no-browser"]
-    assert upd.app_top_dir("darwin") == "Lutron DMX.app" and upd.app_top_dir("win32") == "Lutron DMX"
+    folder = Path("C:/Apps/Lutron To DMX Bridge")
+    assert upd.executable_in(folder, "win32") == folder / "Lutron To DMX Bridge.exe"
+    assert upd.relaunch_command(folder, "win32") == [str(folder / "Lutron To DMX Bridge.exe"), "--no-browser"]
+    assert upd.app_top_dir("darwin") == "Lutron To DMX Bridge.app" and upd.app_top_dir("win32") == "Lutron To DMX Bridge"
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="needs macOS's ditto")
 def test_unpack_keeps_executable_bits_and_symlinks_on_macos(tmp_path):
     z = tmp_path / "r.zip"
     with zipfile.ZipFile(z, "w") as zf:
-        info = zipfile.ZipInfo("Lutron DMX.app/Contents/MacOS/Lutron DMX")
+        info = zipfile.ZipInfo("Lutron To DMX Bridge.app/Contents/MacOS/Lutron To DMX Bridge")
         info.external_attr = (stat.S_IFREG | 0o755) << 16
         zf.writestr(info, "#!/bin/sh\n")
-        link = zipfile.ZipInfo("Lutron DMX.app/Contents/Frameworks/lib.dylib")
+        link = zipfile.ZipInfo("Lutron To DMX Bridge.app/Contents/Frameworks/lib.dylib")
         link.external_attr = (stat.S_IFLNK | 0o755) << 16
         zf.writestr(link, "../Resources/real.dylib")
-        zf.writestr("Lutron DMX.app/Contents/Resources/real.dylib", "x")
+        zf.writestr("Lutron To DMX Bridge.app/Contents/Resources/real.dylib", "x")
     staged = upd.unpack_release(z, tmp_path / "out", "darwin")
     assert os.access(upd.executable_in(staged, "darwin"), os.X_OK)
     assert (staged / "Contents" / "Frameworks" / "lib.dylib").is_symlink()

@@ -8,10 +8,10 @@ import struct
 
 import pytest
 
-from lutron_dmx.config import AppConfig, DmxConfig, DmxFixtureMapping
-from lutron_dmx.dmx import pad_frame
-from lutron_dmx.dmx import artnet, sacn, usb
-from lutron_dmx.dmx.engine import (
+from lutron_to_dmx_bridge.config import AppConfig, DmxConfig, DmxFixtureMapping
+from lutron_to_dmx_bridge.dmx import pad_frame
+from lutron_to_dmx_bridge.dmx import artnet, sacn, usb
+from lutron_to_dmx_bridge.dmx.engine import (
     DEADBAND,
     SETTLE_TIME,
     DmxEngine,
@@ -19,7 +19,7 @@ from lutron_dmx.dmx.engine import (
     fixture_target,
     validate_mappings,
 )
-from lutron_dmx.models import Zone
+from lutron_to_dmx_bridge.models import Zone
 
 
 # ---------------------------------------------------------------------------
@@ -92,8 +92,8 @@ def test_artpoll_reply_layout():
     assert r[10:14] == socket.inet_aton("192.168.1.50")
     assert struct.unpack_from("<H", r, 14)[0] == 6454
     assert r[18] == 0x01 and r[19] == 0x02  # NetSwitch, SubSwitch
-    assert r[26:44].split(b"\x00")[0] == b"LutronDMX"
-    assert r[44:108].split(b"\x00")[0] == b"Lutron DMX Bridge"
+    assert r[26:44].split(b"\x00")[0] == b"LutronToDMXBridge"
+    assert r[44:108].split(b"\x00")[0] == b"Lutron To DMX Bridge"
     assert struct.unpack_from(">H", r, 172)[0] == 1  # NumPorts
     assert r[174] == 0x80  # PortTypes[0]: output
     assert r[182] == 0x80  # GoodOutput[0]
@@ -418,7 +418,7 @@ async def test_artnet_end_to_end_udp():
         reply = await asyncio.to_thread(tx.recv, 1024)
         assert artnet.parse_opcode(reply) == artnet.OP_POLL_REPLY
         assert reply[10:14] == socket.inet_aton("127.0.0.1")
-        assert reply[26:35] == b"LutronDMX"
+        assert reply[26:44].split(b"\x00")[0] == b"LutronToDMXBridge"
         tx.close()
     finally:
         await eng.stop()
@@ -604,7 +604,7 @@ async def test_engine_cue_jump_is_not_faded_and_fade_channel_wins():
 
 async def test_engine_does_not_ramp_switches():
     eng, drv = make_engine([DmxFixtureMapping("a", 1)], zones=["a"])
-    from lutron_dmx.models import ZoneType
+    from lutron_to_dmx_bridge.models import ZoneType
 
     drv.zone("a").type = ZoneType.SWITCH
     eng._init_zone_states()
@@ -620,7 +620,7 @@ async def test_engine_does_not_ramp_switches():
 
 
 async def test_engine_small_first_move_waits_to_see_if_it_is_a_ramp():
-    from lutron_dmx.dmx.engine import RAMP_HOLD
+    from lutron_to_dmx_bridge.dmx.engine import RAMP_HOLD
 
     eng, drv = make_engine([DmxFixtureMapping("a", 1)], zones=["a"])
     eng._init_zone_states()

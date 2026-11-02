@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from lutron_dmx.metrics import DriverMetrics, LatencyStats, LogCounter, RateWindow
+from lutron_to_dmx_bridge.metrics import DriverMetrics, LatencyStats, LogCounter, RateWindow
 
 
 def test_rate_window_counts_events_inside_the_window_only():
@@ -55,7 +55,7 @@ def test_driver_metrics_reconnect_bookkeeping():
 
 def test_log_counter_counts_and_clears():
     counter = LogCounter()
-    logger = logging.getLogger("lutron_dmx.test_metrics")
+    logger = logging.getLogger("lutron_to_dmx_bridge.test_metrics")
     logger.propagate = False
     logger.addHandler(counter)
     try:

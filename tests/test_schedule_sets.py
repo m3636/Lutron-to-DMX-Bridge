@@ -7,14 +7,14 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from lutron_dmx.config import ActiveScheduleSet, AppConfig, DriverConfig, ScheduleRef
-from lutron_dmx.controller import Controller
-from lutron_dmx.drivers import DriverError
-from lutron_dmx.drivers.ra2 import RA2Driver
-from lutron_dmx.drivers.simulator import SimulatorDriver
-from lutron_dmx.models import Schedule
-from lutron_dmx.schedule_sets import ScheduleSetError, resolve_schedule
-from lutron_dmx.web.app import create_app
+from lutron_to_dmx_bridge.config import ActiveScheduleSet, AppConfig, DriverConfig, ScheduleRef
+from lutron_to_dmx_bridge.controller import Controller
+from lutron_to_dmx_bridge.drivers import DriverError
+from lutron_to_dmx_bridge.drivers.ra2 import RA2Driver
+from lutron_to_dmx_bridge.drivers.simulator import SimulatorDriver
+from lutron_to_dmx_bridge.models import Schedule
+from lutron_to_dmx_bridge.schedule_sets import ScheduleSetError, resolve_schedule
+from lutron_to_dmx_bridge.web.app import create_app
 from test_ra2 import FakeRepeater, make_config
 
 # simulator schedules: 70:1 "Sunset Exterior On" (enabled), 70:2 "Midnight All Off" (enabled),
@@ -38,7 +38,7 @@ class FlakySimulator(SimulatorDriver):
 
 @pytest.fixture(autouse=True)
 def home(tmp_path, monkeypatch):
-    monkeypatch.setenv("LUTRON_DMX_HOME", str(tmp_path))
+    monkeypatch.setenv("LUTRON_TO_DMX_BRIDGE_HOME", str(tmp_path))
     return tmp_path
 
 

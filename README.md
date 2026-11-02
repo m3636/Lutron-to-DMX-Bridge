@@ -1,4 +1,4 @@
-# Lutron DMX
+# Lutron To DMX Bridge
 
 Local-only control of a Lutron **RadioRA 2** (Main Repeater) or **RA3 / RA2 Select** system from a web GUI and from DMX512 / Art-Net / sACN. No cloud, no Lutron account. Runs on Windows, macOS, and Linux.
 
@@ -14,27 +14,27 @@ Local-only control of a Lutron **RadioRA 2** (Main Repeater) or **RA3 / RA2 Sele
 - JSON backup of everything the system lets us read.
 
 ## Start it with a double-click
-Running the app opens a small **log window** (live log, Copy / Save log, Open web GUI, Quit) and opens the **web GUI** in your browser. The first time, before a controller is set up, it opens on the Settings tab. Closing the log window stops the app (minimise it to keep it running). If it is already running, double-clicking again just opens the web GUI. Logs are also kept in a rotating file (`lutron-dmx info` prints where).
+Running the app opens a small **log window** (live log, Copy / Save log, Open web GUI, Quit) and opens the **web GUI** in your browser. The first time, before a controller is set up, it opens on the Settings tab. Closing the log window stops the app (minimise it to keep it running). If it is already running, double-clicking again just opens the web GUI. Logs are also kept in a rotating file (`lutron-to-dmx-bridge info` prints where).
 
 | How | Steps |
 |---|---|
-| **Built app** (nothing to install) | Download `LutronDMX-<version>-macOS.zip` or `LutronDMX-<version>-Windows.zip` from the repository's **Releases** page, unzip, double-click **Lutron DMX.app** (macOS) or **Lutron DMX\Lutron DMX.exe** (Windows). Builds of unreleased branches are in the **Artifacts** list at the bottom of a CI run's summary page (not inside a job). |
-| **From a checkout, macOS** | Double-click **Launch Lutron DMX.command**. The first run creates `.venv` and installs the requirements. |
-| **From a checkout, Windows** | Double-click **Launch Lutron DMX.bat** (same idea). |
-| **Developer** | `python -m pip install -e . && lutron-dmx-app` (or `python -m lutron_dmx.launcher`; add `--simulator`, `--no-window` for terminal-only, `-v` for debug detail). |
+| **Built app** (nothing to install) | Download `LutronToDMXBridge-<version>-macOS.zip` or `LutronToDMXBridge-<version>-Windows.zip` from the repository's **Releases** page, unzip, double-click **Lutron To DMX Bridge.app** (macOS) or **Lutron To DMX Bridge\Lutron To DMX Bridge.exe** (Windows). Builds of unreleased branches are in the **Artifacts** list at the bottom of a CI run's summary page (not inside a job). |
+| **From a checkout, macOS** | Double-click **Launch Lutron To DMX Bridge.command**. The first run creates `.venv` and installs the requirements. |
+| **From a checkout, Windows** | Double-click **Launch Lutron To DMX Bridge.bat** (same idea). |
+| **Developer** | `python -m pip install -e . && lutron-to-dmx-bridge-app` (or `python -m lutron_to_dmx_bridge.launcher`; add `--simulator`, `--no-window` for terminal-only, `-v` for debug detail). |
 
-**macOS "unidentified developer" warning.** The app is not signed or notarised, so Gatekeeper blocks a copy downloaded from GitHub. Either right-click the app and choose **Open**, then **Open** again (once), or run `xattr -dr com.apple.quarantine "Lutron DMX.app"` in Terminal. On macOS 15 (Sequoia) right-click is no longer enough: try to open it, then go to **System Settings → Privacy & Security** and click **Open Anyway**. An app you build yourself is not blocked. On macOS 15+ it also asks to allow **Local Network** access: say yes, or the controller cannot be found.
+**macOS "unidentified developer" warning.** The app is not signed or notarised, so Gatekeeper blocks a copy downloaded from GitHub. Either right-click the app and choose **Open**, then **Open** again (once), or run `xattr -dr com.apple.quarantine "Lutron To DMX Bridge.app"` in Terminal. On macOS 15 (Sequoia) right-click is no longer enough: try to open it, then go to **System Settings → Privacy & Security** and click **Open Anyway**. An app you build yourself is not blocked. On macOS 15+ it also asks to allow **Local Network** access: say yes, or the controller cannot be found.
 
 **tkinter.** The log window needs tkinter. python.org installers include it; Homebrew needs `brew install python-tk@3.12` (and a fresh `.venv`). Without it the launcher still works but logs to the terminal instead of a window, and the build script refuses to build an app without it.
 
-**Port in use.** If another program holds port 8080 the app uses the next free port from 8081 and says so in the log. If it is another copy of Lutron DMX, it reuses that one.
+**Port in use.** If another program holds port 8080 the app uses the next free port from 8081 and says so in the log. If it is another copy of Lutron To DMX Bridge, it reuses that one.
 
-The built app is the log window and web GUI only; for `pair`, `discover` and `backup` use the pip-installed `lutron-dmx` command (or the same arguments on the app's executable).
+The built app is the log window and web GUI only; for `pair`, `discover` and `backup` use the pip-installed `lutron-to-dmx-bridge` command (or the same arguments on the app's executable).
 
 ## Quick start (no Lutron hardware needed)
 ```
 python -m pip install -e .
-lutron-dmx --simulator
+lutron-to-dmx-bridge --simulator
 ```
 The simulator is a made-up house: 14 lights in a few rooms, three keypads and three schedules, so you can try everything without a controller.
 
@@ -42,22 +42,22 @@ The simulator is a made-up house: 14 lights in a few rooms, three keypads and th
 | System | How it connects |
 |---|---|
 | **RadioRA 2** (Lutron Connect app, Main Repeater) | Settings → RadioRA 2: repeater IP, integration login (set in the RA2 software; defaults are often `lutron` / `integration`). Fixtures are read from the repeater's `DbXmlInfo.xml`, or point at an exported copy. |
-| **RA3 / RA2 Select** | `lutron-dmx pair` (finds the processor by itself, or pass `<bridge-ip>`), then press the small button on the back of the processor. Local certificates only. |
+| **RA3 / RA2 Select** | `lutron-to-dmx-bridge pair` (finds the processor by itself, or pass `<bridge-ip>`), then press the small button on the back of the processor. Local certificates only. |
 
-Pairing checks the controller's certificate against Lutron's published CAs. If your processor presents one that matches neither (`CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate`), pairing stops and shows the certificate it saw. If that is your controller, pair again with `lutron-dmx pair --trust-controller-cert` (the web GUI asks you to confirm): the pairing socket then accepts that certificate once (trust on first use; the button press proves physical access), and the connection that actually controls lights always verifies against the CA the processor issued. `lutron-dmx -v pair` shows the details.
+Pairing checks the controller's certificate against Lutron's published CAs. If your processor presents one that matches neither (`CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate`), pairing stops and shows the certificate it saw. If that is your controller, pair again with `lutron-to-dmx-bridge pair --trust-controller-cert` (the web GUI asks you to confirm): the pairing socket then accepts that certificate once (trust on first use; the button press proves physical access), and the connection that actually controls lights always verifies against the CA the processor issued. `lutron-to-dmx-bridge -v pair` shows the details.
 
 ### Finding the controller's IP address
-Don't know the IP? `lutron-dmx discover` (or **Settings → Find my controller** in the GUI) looks for it:
+Don't know the IP? `lutron-to-dmx-bridge discover` (or **Settings → Find my controller** in the GUI) looks for it:
 
 1. **Bonjour/mDNS** (`_lutron._tcp`, the same thing the Lutron phone app uses). Finds RadioRA 3, RA2 Select, Caseta and HomeWorks QS processors in a few seconds.
-2. **Network scan** if mDNS finds nothing (or tick "Also scan", or `lutron-dmx discover --scan`): tries TCP 8081 (LEAP, checks the certificate is Lutron's) and TCP 23 (a RadioRA 2 Main Repeater answers with a `login:` prompt) on this computer's local /24. This is how a classic RadioRA 2 Main Repeater is found, as it is not known to advertise over mDNS.
+2. **Network scan** if mDNS finds nothing (or tick "Also scan", or `lutron-to-dmx-bridge discover --scan`): tries TCP 8081 (LEAP, checks the certificate is Lutron's) and TCP 23 (a RadioRA 2 Main Repeater answers with a `login:` prompt) on this computer's local /24. This is how a classic RadioRA 2 Main Repeater is found, as it is not known to advertise over mDNS.
 3. A Lutron MAC address (`00:0F:E7`) in the ARP table raises the match score; it is only a hint.
 
 Once a LEAP processor is paired its Bonjour name is remembered, so if the router hands it a new IP the app finds it again on start-up.
 
 Things that stop discovery: the computer is on a different network/VLAN than the controller, the router filters multicast/mDNS (Lutron asks for Bonjour/mDNS to be allowed and IGMP snooping off), the Windows Firewall prompt for Python was denied, or on macOS 15+ Local Network access is off for the app (System Settings → Privacy & Security → Local Network). Running from Terminal is exempt on macOS. You can always type the IP in by hand; give the controller a DHCP reservation so it stays put.
 
-Backup: `lutron-dmx backup` or the Settings tab. On RadioRA 2 this is a reference snapshot; the RA2 programming software project file is the real recovery source. **A backup contains the controller's full project export, including the installer's name and contact details. Keep it private and never attach it to an issue.**
+Backup: `lutron-to-dmx-bridge backup` or the Settings tab. On RadioRA 2 this is a reference snapshot; the RA2 programming software project file is the real recovery source. **A backup contains the controller's full project export, including the installer's name and contact details. Keep it private and never attach it to an issue.**
 
 ## DMX hardware
 - **Network (recommended):** a node such as the PKnight CR021R turns a physical DMX input into Art-Net/sACN. Point the app at that universe.
@@ -69,7 +69,7 @@ A RadioRA 2 repeater works through its telnet commands one at a time and passes 
 
 - **Max updates / second / zone** (default 5) and **Max updates / second, all zones** (default 20) cap what is sent. If more zones need an update than the budget allows, the ones that have waited longest go first.
 - When a console fades or ramps a light, the app sends each update with a fade time and aims it at where the ramp will be when the next update lands, so the dimmer glides on its own between commands and many lights stay together. A cue that jumps to a level is sent immediately, with no fade. A `fade` channel on a fixture always wins.
-- If lights still update one after another, or keep moving after the console has stopped, the repeater is being sent more than it can take: lower **Max updates / second, all zones** (try 10). If your system keeps up easily, raise it. `lutron-dmx -v` logs how many updates are held back and how long the repeater takes to echo each one.
+- If lights still update one after another, or keep moving after the console has stopped, the repeater is being sent more than it can take: lower **Max updates / second, all zones** (try 10). If your system keeps up easily, raise it. `lutron-to-dmx-bridge -v` logs how many updates are held back and how long the repeater takes to echo each one.
 - Art-Net universes start at 0; sACN universes start at 1.
 - **Testing without hardware:** [`qlcplus/`](qlcplus/README.md) has a QLC+ workspace that acts as a lighting desk and drives the simulator over Art-Net.
 
@@ -85,19 +85,19 @@ The chips in the top right are always visible. Green is fine, amber is worth a l
 The Status tab graphs keep the last two minutes in the browser, so they start empty after a refresh.
 
 ## Packaging
-`python -m pip install -e . pyinstaller && python packaging/build.py` builds the double-clickable app on the current OS (`dist/LutronDMX-<version>-macOS.zip` holding `Lutron DMX.app`, or `dist/LutronDMX-<version>-Windows.zip`), starts it once as a check (`--self-check`: simulator up, GUI and API fetched, clean stop), and zips it. The build is described by `packaging/LutronDMX.spec`; `packaging/make_icons.py` regenerates the icons. CI builds and uploads the Windows and macOS zips.
+`python -m pip install -e . pyinstaller && python packaging/build.py` builds the double-clickable app on the current OS (`dist/LutronToDMXBridge-<version>-macOS.zip` holding `Lutron To DMX Bridge.app`, or `dist/LutronToDMXBridge-<version>-Windows.zip`), starts it once as a check (`--self-check`: simulator up, GUI and API fetched, clean stop), and zips it. The build is described by `packaging/LutronToDMXBridge.spec`; `packaging/make_icons.py` regenerates the icons. CI builds and uploads the Windows and macOS zips.
 
 ## Updates
 When a newer release exists on GitHub, a blue banner appears at the top of the web GUI (and a line in the log window): **Version X is available · Release notes · Update now · Dismiss**. Dismissing hides that version only; the banner returns for the next one. **Settings → Updates** shows the installed and latest versions and has a **Check now** button.
 
-**Privacy.** This is the one thing in the app that talks to the internet. It asks GitHub's public "latest release" endpoint for this repository, on start-up and every 12 hours, and sends nothing about you, your lights or your network. Untick **Check for updates automatically** (or set `LUTRON_DMX_NO_UPDATE_CHECK=1`) and the app only contacts GitHub when you press **Check now**. Offline, rate-limited or "not found" simply mean no banner. Only if you run a private fork, GitHub answers "not found" to anonymous checks; paste a read-only fine-grained token (Contents: read, that repository only) into **Settings → Updates**. It is stored in `config.json` like the other settings and is only ever sent to GitHub.
+**Privacy.** This is the one thing in the app that talks to the internet. It asks GitHub's public "latest release" endpoint for this repository, on start-up and every 12 hours, and sends nothing about you, your lights or your network. Untick **Check for updates automatically** (or set `LUTRON_TO_DMX_BRIDGE_NO_UPDATE_CHECK=1`) and the app only contacts GitHub when you press **Check now**. Offline, rate-limited or "not found" simply mean no banner. Only if you run a private fork, GitHub answers "not found" to anonymous checks; paste a read-only fine-grained token (Contents: read, that repository only) into **Settings → Updates**. It is stored in `config.json` like the other settings and is only ever sent to GitHub.
 
 **What "Update now" does**, by how the app was installed:
 
 | Installed as | Update |
 |---|---|
-| **Lutron DMX.app** (macOS) or **Lutron DMX\Lutron DMX.exe** (Windows) | Downloads `LutronDMX-<version>-<OS>.zip` from the release, checks its SHA-256 against the release's `SHA256SUMS.txt`, unpacks it into the app's data folder, starts the new copy's `--self-check`, and only then closes the running app. The new copy then swaps itself in, reopens, and the browser tab reloads by itself. If anything goes wrong at any step, the old version stays or is put back and the banner says why. |
-| A git checkout (`python -m lutron_dmx`) | Fast-forwards `main` to the release tag and runs `pip install -e .`, then asks you to restart. Refuses (and tells you) if the checkout has uncommitted changes, is not on `main`, `origin` is not this repository, or `main` has diverged. |
+| **Lutron To DMX Bridge.app** (macOS) or **Lutron To DMX Bridge\Lutron To DMX Bridge.exe** (Windows) | Downloads `LutronToDMXBridge-<version>-<OS>.zip` from the release, checks its SHA-256 against the release's `SHA256SUMS.txt`, unpacks it into the app's data folder, starts the new copy's `--self-check`, and only then closes the running app. The new copy then swaps itself in, reopens, and the browser tab reloads by itself. If anything goes wrong at any step, the old version stays or is put back and the banner says why. |
+| A git checkout (`python -m lutron_to_dmx_bridge`) | Fast-forwards `main` to the release tag and runs `pip install -e .`, then asks you to restart. Refuses (and tells you) if the checkout has uncommitted changes, is not on `main`, `origin` is not this repository, or `main` has diverged. |
 | Anything else, or a macOS app still running from Downloads, or a folder the app can't write to | Shows what to do by hand (the macOS case: drag the app into Applications first). |
 
 **Safety.** The download must come from this repository's own release downloads over HTTPS (redirects may only go to GitHub, and the token is never forwarded to another host). A file that does not match its published checksum is deleted and nothing is installed. Nothing happens without a click. If a schedule set (such as Performance mode) is active or DMX input is live, you are asked to confirm first. Settings, scenes, certificates and logs live in the app's data folder and are never touched by an update. The previous version is kept in `<data folder>/updates/previous/<version>/` (one older version, replaced by the next update). To roll back, quit the app and put that copy back in place of the installed one. A note about how the last update went is in `update-result.json` until the next start, and the installer step logs to `logs/update.log`.
@@ -105,7 +105,7 @@ When a newer release exists on GitHub, a blue banner appears at the top of the w
 Limits: the integrity check proves the download is the file published with the release, not that the release itself is trustworthy (anyone who can publish a release on the repository could publish an update), and the macOS app is not code-signed. Only the arm64 macOS build and the 64-bit Windows build are published.
 
 ## Versions and releases
-Versions follow [semantic versioning](https://semver.org) (`MAJOR.MINOR.PATCH`; while below 1.0, a new feature bumps MINOR and a fix bumps PATCH). The one place the version lives is `__version__` in `lutron_dmx/__init__.py`; the package metadata, the app's log window, and the macOS bundle all read it.
+Versions follow [semantic versioning](https://semver.org) (`MAJOR.MINOR.PATCH`; while below 1.0, a new feature bumps MINOR and a fix bumps PATCH). The one place the version lives is `__version__` in `lutron_to_dmx_bridge/__init__.py`; the package metadata, the app's log window, and the macOS bundle all read it.
 
 ### How to release
 On GitHub: **Actions → New release → Run workflow**, then pick **patch**, **minor** or **major** (or type an exact version such as `1.0.0`) and click the green button. Optionally add a sentence for the top of the release notes. Tick **Dry run** first if you want to see what it would do.
@@ -132,8 +132,14 @@ By hand still works: `python tools/bump_version.py minor`, merge that change, th
 - **No login on the web GUI.** It listens on `127.0.0.1` only by default. Do not point it at a LAN or the internet unless you trust everyone who can reach the port; see [SECURITY.md](SECURITY.md).
 - **Your settings are private.** `config.json` in the app's data folder holds your controller address and integration login (and an update token if you set one).
 
+## Upgrading from "Lutron DMX"
+This project was called **Lutron DMX** before it became **Lutron To DMX Bridge**. Nothing about your setup has to be redone: the first start of this version moves your settings folder (`LutronDMX` in `%APPDATA%` / `~/Library/Application Support`, or `~/.config/lutron-dmx`) to the new name (`LutronToDMXBridge` / `lutron-to-dmx-bridge`), including scenes, schedule sets, pairing certificates and backups. If you started the app from a checkout, the launcher reinstalls the package by itself the first time. What changed for scripts: the command is now `lutron-to-dmx-bridge` (and `lutron-to-dmx-bridge-app`), the Python package is `lutron_to_dmx_bridge`, the environment variable `LUTRON_DMX_HOME` is now `LUTRON_TO_DMX_BRIDGE_HOME` (the old name still works), and release files are named `LutronToDMXBridge-<version>-<OS>.zip`.
+
 ## Status
 Works against the built-in simulator and, in the author's testing, a RadioRA 2 system with two Main Repeaters (connect, read areas, lights, keypads and schedules). Not yet confirmed on real hardware: RA2 timeclock enable/disable commands, LEAP schedule access (RA3 / RA2 Select), and USB / Art-Net behaviour with every kind of adapter. Reports from other systems are welcome; please read the note about private data in the issue template first.
 
 ## License
 [Apache-2.0](LICENSE). Third-party components are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). "Art-Net(TM) Designed by and Copyright Artistic Licence Engineering Ltd."
+
+## Trademarks
+Lutron To DMX Bridge is an independent, community project. It is **not affiliated with, sponsored by or endorsed by Lutron Electronics Co., Inc.** "Lutron", "RadioRA", "Caseta", "Connect" and "HomeWorks" are trademarks or registered trademarks of Lutron Electronics Co., Inc.; they appear here only to describe which products this software works with. The app's name and its logo are not Lutron's and do not use any Lutron artwork: the logo is original (see `packaging/make_icons.py`). All other product names, including Art-Net, QLC+, Enttec and PKnight, belong to their respective owners.
