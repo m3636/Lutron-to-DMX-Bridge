@@ -421,6 +421,13 @@ def self_check(out: str | None) -> int:
             need(True, "tkinter")
         except Exception as exc:
             need(False, f"tkinter import: {exc}")
+        try:
+            from . import updater
+
+            cas = updater._tls_context().cert_store_stats()["x509_ca"]
+            need(cas > 0, f"HTTPS trust store for the update check ({cas} CA certificates)")
+        except Exception as exc:
+            need(False, f"HTTPS trust store: {type(exc).__name__}: {exc}")
         thread = None
         try:
             config = AppConfig()
