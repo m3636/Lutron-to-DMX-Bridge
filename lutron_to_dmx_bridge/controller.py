@@ -11,7 +11,7 @@ import logging
 import uuid
 
 from .config import AppConfig, DriverConfig, SceneConfig
-from .drivers import LutronDriver, create_driver
+from .drivers import DriverError, LutronDriver, create_driver
 from .schedule_sets import ScheduleSetManager
 
 log = logging.getLogger(__name__)
@@ -24,18 +24,35 @@ class Controller:
         self.dmx = None  # set by start() when DMX is enabled; see lutron_to_dmx_bridge.dmx.engine
         self.last_error: str | None = None
         self._lock = asyncio.Lock()
+        #: the connect that start() is waiting on, so a settings change can stop it
+        self._starting: asyncio.Task | None = None
         self.schedule_sets = ScheduleSetManager(self)
 
     # -- lifecycle -------------------------------------------------------
     async def start(self) -> None:
+        task = self._starting = asyncio.create_task(self.driver.connect())
         try:
-            await self.driver.connect()
-            self.last_error = None
-        except Exception as exc:  # keep the GUI usable so the user can fix settings
-            log.exception("Driver connect failed")
-            self.last_error = str(exc)
+            await asyncio.wait({task})  # does not raise if the connect fails or is cancelled
+        finally:
+            task.cancel()  # start() itself was cancelled (shutdown): do not leave the connect running
+            if self._starting is task:
+                self._starting = None
+        if task.cancelled():
+            pass  # reconfigure_driver() replaced the driver while it was connecting
+        elif task.exception() is not None:  # keep the GUI usable so the user can fix settings
+            self._connect_failed(task.exception())
             await self._try_rediscover()
+        else:
+            self.last_error = None
         await self.restart_dmx()
+
+    def _connect_failed(self, exc: BaseException) -> None:
+        """A DriverError already says what is wrong in one line; only a surprise gets a traceback."""
+        if isinstance(exc, DriverError):
+            log.error("Driver connect failed: %s", exc)
+        else:
+            log.error("Driver connect failed", exc_info=exc)
+        self.last_error = str(exc)
 
     async def _try_rediscover(self) -> None:
         """If the saved IP no longer answers, look the processor up again by its mDNS name."""
@@ -56,8 +73,7 @@ class Controller:
             await self.driver.connect()
             self.last_error = None
         except Exception as exc:
-            log.exception("Driver connect failed")
-            self.last_error = str(exc)
+            self._connect_failed(exc)
 
     async def stop(self) -> None:
         if self.dmx is not None:
@@ -67,6 +83,8 @@ class Controller:
 
     async def reconfigure_driver(self, driver_config: DriverConfig) -> None:
         async with self._lock:
+            if self._starting is not None:  # the first connect is still running; the new settings win
+                self._starting.cancel()
             await self.driver.close()
             self.config.driver = driver_config
             self.config.save()
@@ -75,8 +93,7 @@ class Controller:
                 await self.driver.connect()
                 self.last_error = None
             except Exception as exc:
-                log.exception("Driver connect failed")
-                self.last_error = str(exc)
+                self._connect_failed(exc)
             if self.dmx is not None:
                 self.dmx.controller = self
 

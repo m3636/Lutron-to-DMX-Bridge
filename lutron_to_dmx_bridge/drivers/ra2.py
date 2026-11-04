@@ -31,10 +31,13 @@ over telnet; the Main Repeater serves it as XML at ``http://<host>/DbXmlInfo.xml
 from __future__ import annotations
 
 import asyncio
+import http.client
 import logging
+import os
 import re
+import socket
+import threading
 import time
-import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
@@ -45,6 +48,18 @@ from .base import DriverError, LutronDriver
 log = logging.getLogger(__name__)
 
 DEFAULT_PORT = 23
+HTTP_PORT = 80
+#: The repeater's little web server is slow: on the install this was tuned on a download takes
+#: about 50 s, trickling bytes, and it ignores a second request made while it is busy with the
+#: first.  So wait generously for each read, give up on the whole download only after
+#: DOWNLOAD_TOTAL_TIMEOUT, retry, and never run two downloads at once.
+DOWNLOAD_CONNECT_TIMEOUT = 10.0
+DOWNLOAD_READ_TIMEOUT = 45.0
+DOWNLOAD_TOTAL_TIMEOUT = 120.0
+DOWNLOAD_ATTEMPTS = 3
+DOWNLOAD_PAUSE = (2.0, 5.0)
+#: with a cached copy on disk, wait this long for the download before starting from the copy
+CACHE_GRACE = 15.0
 PROMPT = b"GNET> "
 LOGIN_PROMPT = b"login: "
 PASSWORD_PROMPT = b"password: "
@@ -254,9 +269,26 @@ class RA2Driver(LutronDriver):
         keepalive_interval: float = 60.0,
         connect_timeout: float = 10.0,
         reconnect_max_delay: float = 30.0,
+        http_port: int = HTTP_PORT,
+        cache_dir: Path | None = None,
+        read_timeout: float = DOWNLOAD_READ_TIMEOUT,
+        download_attempts: int = DOWNLOAD_ATTEMPTS,
+        download_pause: tuple[float, ...] = DOWNLOAD_PAUSE,
+        cache_grace: float = CACHE_GRACE,
     ) -> None:
         super().__init__()
         self.config = config
+        self.http_port = http_port
+        self._cache_dir = cache_dir
+        self.read_timeout = read_timeout
+        self.download_attempts = download_attempts
+        self.download_pause = download_pause
+        #: how long to wait for the download before starting from the cached copy, if there is one
+        self.cache_grace = cache_grace
+        #: "download", "cache" (the repeater was slow or unreachable) or "file"
+        self.inventory_source = ""
+        self._download_task: asyncio.Task[bytes] | None = None
+        self._cancel_download = threading.Event()
         self.keepalive_interval = keepalive_interval
         self.connect_timeout = connect_timeout
         self.reconnect_max_delay = reconnect_max_delay
@@ -294,6 +326,10 @@ class RA2Driver(LutronDriver):
 
     async def close(self) -> None:
         self._closing = True
+        self._cancel_download.set()
+        if self._download_task is not None:
+            self._download_task.cancel()
+            self._download_task = None
         tasks = [t for t in (self._keepalive_task, self._reconnect_task, self._read_task) if t]
         self._keepalive_task = self._reconnect_task = self._read_task = None
         for t in tasks:
@@ -309,7 +345,12 @@ class RA2Driver(LutronDriver):
         return self._inventory
 
     async def _load_db_xml(self) -> str:
-        """Read the integration report from a local file, else from the repeater."""
+        """Read the integration report from a local file, else from the repeater.
+
+        The download is slow and sometimes stalls, so every good copy is kept in the app's data
+        folder.  When the download fails, or is still running after ``cache_grace`` seconds, the
+        driver starts from that copy instead of failing the whole connect.
+        """
         report = (self.config.integration_report or "").strip()
         if report:
             path = Path(report).expanduser()
@@ -317,18 +358,120 @@ class RA2Driver(LutronDriver):
                 data = await asyncio.to_thread(path.read_bytes)
             except OSError as exc:
                 raise DriverError(f"Cannot read integration report {path}: {exc}") from exc
-        else:
-            if not self.config.host:
-                raise DriverError("No RA2 Main Repeater host configured")
-            url = f"http://{self.config.host}/DbXmlInfo.xml"
+            self.inventory_source = "file"
+            return data.decode("utf-8-sig", errors="replace")
+
+        if not self.config.host:
+            raise DriverError("No RA2 Main Repeater host configured")
+        host = self.config.host
+        cached = await asyncio.to_thread(self._read_cache)
+        cancel = self._cancel_download = threading.Event()
+        task = asyncio.create_task(asyncio.to_thread(self._download, cancel))
+        self._download_task = task
+        if cached is None:
             try:
-                data = await asyncio.to_thread(_http_get, url, 30.0)
-            except Exception as exc:  # urllib raises a zoo of exception types
-                raise DriverError(
-                    f"Could not download {url}: {exc}. Save that page from a browser and "
-                    "set it as the integration report file instead."
-                ) from exc
-        return data.decode("utf-8-sig", errors="replace")
+                text = await task
+            except BaseException:
+                cancel.set()
+                raise
+            self.inventory_source = "download"
+            return text
+
+        try:
+            done, _ = await asyncio.wait({task}, timeout=self.cache_grace)
+        except BaseException:
+            cancel.set()
+            task.cancel()
+            raise
+        if done and not task.cancelled() and task.exception() is None:
+            self.inventory_source = "download"
+            return task.result()
+        if done:
+            reason = "cancelled" if task.cancelled() else str(task.exception())
+            log.warning("%s Starting from the copy saved earlier.", reason)
+        else:
+            log.warning("The repeater at %s is slow to hand over DbXmlInfo.xml; starting from the "
+                        "copy saved earlier while the download carries on.", host)
+            task.add_done_callback(lambda t: self._finished_late(t, cached))
+        self.inventory_source = "cache"
+        return cached
+
+    def _finished_late(self, task: asyncio.Task[str], used: str) -> None:
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            log.warning("%s", exc)
+        elif task.result() != used:
+            log.info("The Lutron programming changed since the saved copy was made; "
+                     "Save & reconnect (or restart the app) to load the new one.")
+        else:
+            log.info("Downloaded DbXmlInfo.xml; it matches the saved copy.")
+
+    # -- DbXmlInfo.xml download and cache ----------------------------------
+    def _cache_file(self) -> Path:
+        if self._cache_dir is not None:
+            folder = self._cache_dir
+        else:
+            from ..config import data_dir
+
+            folder = data_dir() / "cache"
+        return folder / f"dbxml-{re.sub(r'[^A-Za-z0-9_.-]', '_', str(self.config.host))}.xml"
+
+    def _read_cache(self) -> str | None:
+        """The last good download for this repeater, or None."""
+        try:
+            path = self._cache_file()
+            text = path.read_bytes().decode("utf-8-sig", errors="replace")
+            parse_db_xml(text)
+            return text
+        except FileNotFoundError:
+            return None
+        except (OSError, ET.ParseError, ValueError) as exc:
+            log.warning("Ignoring the saved copy of DbXmlInfo.xml: %s", exc)
+            return None
+
+    def _write_cache(self, text: str) -> None:
+        try:
+            path = self._cache_file()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text(text, encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError as exc:
+            log.warning("Could not save a copy of DbXmlInfo.xml: %s", exc)
+
+    def _download(self, cancel: threading.Event) -> str:
+        """Blocking: fetch and check DbXmlInfo.xml, retrying; keep a copy.  Raises DriverError."""
+        host = self.config.host
+        last = "no answer"
+        for attempt in range(1, self.download_attempts + 1):
+            # One download at a time: the repeater's web server starves a second, concurrent request.
+            while not _DOWNLOAD_LOCK.acquire(timeout=0.5):
+                if cancel.is_set():
+                    raise DriverError("The DbXmlInfo.xml download was cancelled")
+            try:
+                data = _fetch_db_xml(host, self.http_port, cancel, self.read_timeout)
+                parse_db_xml(data)  # a download cut short is not valid XML; retry rather than cache it
+                text = data.decode("utf-8-sig", errors="replace")
+                self._write_cache(text)
+                return text
+            except _Cancelled:
+                raise DriverError("The DbXmlInfo.xml download was cancelled") from None
+            except (OSError, http.client.HTTPException, ET.ParseError, ValueError) as exc:
+                last = _describe(exc)
+                log.debug("DbXmlInfo.xml attempt %d/%d from %s failed: %s",
+                          attempt, self.download_attempts, host, last)
+            finally:
+                _DOWNLOAD_LOCK.release()
+            if attempt < self.download_attempts:
+                pause = self.download_pause[min(attempt - 1, len(self.download_pause) - 1)] \
+                    if self.download_pause else 0.0
+                if cancel.wait(pause):
+                    raise DriverError("The DbXmlInfo.xml download was cancelled")
+        raise DriverError(
+            f"Could not download http://{host}/DbXmlInfo.xml ({last}; tried {self.download_attempts} "
+            "times). Save that page from a browser and set it as the integration report file instead.")
 
     async def _open(self) -> None:
         """Open the telnet socket, log in and start monitoring."""
@@ -578,11 +721,57 @@ class RA2Driver(LutronDriver):
 
 
 # -- helpers ---------------------------------------------------------------
-def _http_get(url: str, timeout: float) -> bytes:
-    # Bypass any system proxy - the repeater is always on the local network.
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    with opener.open(url, timeout=timeout) as resp:
-        return resp.read()
+_DOWNLOAD_LOCK = threading.Lock()
+
+
+class _Cancelled(Exception):
+    pass
+
+
+def _describe(exc: BaseException) -> str:
+    if isinstance(exc, TimeoutError):
+        return "timed out waiting for the repeater"
+    if isinstance(exc, ET.ParseError):
+        return f"the reply was not complete XML ({exc})"
+    return str(exc) or type(exc).__name__
+
+
+def _fetch_db_xml(host: str, port: int, cancel: threading.Event, read_timeout: float,
+                  *, connect_timeout: float = DOWNLOAD_CONNECT_TIMEOUT,
+                  total_timeout: float = DOWNLOAD_TOTAL_TIMEOUT) -> bytes:
+    """One blocking GET of /DbXmlInfo.xml.
+
+    ``read_timeout`` limits the wait for each piece of the reply, ``total_timeout`` the whole
+    transfer.  http.client never uses a system proxy, which is right: the repeater is local.
+    """
+    deadline = time.monotonic() + total_timeout
+    conn = http.client.HTTPConnection(host, port, timeout=connect_timeout)
+    try:
+        conn.connect()
+        assert conn.sock is not None
+        conn.sock.settimeout(read_timeout)
+        conn.request("GET", "/DbXmlInfo.xml",
+                     headers={"User-Agent": "Lutron-To-DMX-Bridge", "Accept": "*/*", "Connection": "close"})
+        resp = conn.getresponse()
+        if resp.status != 200:
+            raise OSError(f"HTTP {resp.status} {resp.reason}")
+        chunks: list[bytes] = []
+        while True:
+            if cancel.is_set():
+                raise _Cancelled
+            if time.monotonic() > deadline:
+                raise TimeoutError("timed out")
+            chunk = resp.read(8192)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        data = b"".join(chunks)
+        expected = resp.getheader("Content-Length")
+        if expected and expected.isdigit() and len(data) != int(expected):
+            raise OSError(f"the reply stopped after {len(data)} of {expected} bytes")
+        return data
+    finally:
+        conn.close()
 
 
 async def _read_until(reader: asyncio.StreamReader, tokens: tuple[bytes, ...],
