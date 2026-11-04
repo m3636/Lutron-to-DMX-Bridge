@@ -436,7 +436,7 @@ class RA2Driver(LutronDriver):
             path = self._cache_file()
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_name(path.name + ".tmp")
-            tmp.write_text(text, encoding="utf-8")
+            tmp.write_bytes(text.encode("utf-8"))  # bytes: text mode would turn each CRLF into CR CR LF on Windows
             os.replace(tmp, path)
         except OSError as exc:
             log.warning("Could not save a copy of DbXmlInfo.xml: %s", exc)
