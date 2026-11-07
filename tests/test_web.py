@@ -447,6 +447,44 @@ def test_pair_untrusted_cert_returns_409_then_opt_in_pairs(home, monkeypatch):
     assert calls == [False, True]
 
 
+def test_dmx_protection_settings_round_trip_and_validate(ctx):
+    client, ctl, _ = ctx
+    body = {"enabled": False, "source": "artnet", "mappings": []}
+    d = client.get("/api/settings/dmx").json()
+    assert d["protect"] is True and d["latency_limit_ms"] == 500 and d["max_inflight"] == 40  # defaults
+    r = client.put("/api/settings/dmx", json={**body, "protect": False, "latency_limit_ms": 800, "max_inflight": 12})
+    assert r.status_code == 200, r.text
+    assert (ctl.config.dmx.protect, ctl.config.dmx.latency_limit_ms, ctl.config.dmx.max_inflight) == (False, 800, 12)
+    assert client.put("/api/settings/dmx", json={**body, "latency_limit_ms": 5}).status_code == 422
+    assert client.put("/api/settings/dmx", json={**body, "max_inflight": -1}).status_code == 422
+
+
+def test_dmx_pause_endpoint_needs_a_running_engine_and_toggles_it(ctx):
+    client, ctl, _ = ctx
+    assert client.post("/api/dmx/pause", json={"paused": True}).status_code == 409  # DMX is off
+    # port 6454 may be taken on the machine running the tests: use a stub receiver
+    from lutron_to_dmx_bridge.dmx.engine import DmxEngine
+
+    class Stub:
+        async def start(self): ...
+        async def stop(self): ...
+
+    async def start_engine():
+        ctl.config.dmx.enabled = True
+        ctl.dmx = DmxEngine(ctl, receiver_factory=lambda e: Stub())
+        await ctl.dmx.start()
+
+    client.portal.call(start_engine)  # on the loop the app runs on
+    r = client.post("/api/dmx/pause", json={"paused": True})
+    assert r.status_code == 200 and r.json()["paused"] is True
+    assert r.json()["protect"]["state"] == "paused" and r.json()["protect"]["reason"]
+    st = client.get("/api/status").json()["dmx"]
+    assert st["paused"] is True and st["protect"]["enabled"] is True
+    r = client.post("/api/dmx/pause", json={"paused": False})
+    assert r.json()["paused"] is False and r.json()["protect"]["state"] in ("ok", "backoff")
+    assert client.post("/api/dmx/pause", json={}).status_code == 422
+    client.portal.call(ctl.dmx.stop)
+
 def test_status_reports_the_queue(ctx):
     client, _, _ = ctx
     assert client.get("/api/status").json()["queue"] == {

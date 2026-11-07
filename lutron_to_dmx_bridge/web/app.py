@@ -105,7 +105,14 @@ class DmxSettingsBody(BaseModel):
     serial_port: str = ""
     max_rate_hz: float = Field(default=5.0, gt=0, le=50)
     max_commands_per_s: float = Field(default=20.0, ge=0, le=1000)
+    protect: bool = True
+    latency_limit_ms: float = Field(default=500.0, ge=50, le=10000)
+    max_inflight: int = Field(default=40, ge=0, le=500)
     mappings: list[MappingBody] = Field(default_factory=list)
+
+
+class DmxPauseBody(BaseModel):
+    paused: bool
 
 
 class AutoAssignBody(BaseModel):
@@ -732,6 +739,7 @@ def create_app(controller, discover=None, updater: Updater | None = None, bind_h
             enabled=body.enabled, source=body.source, universe=body.universe,
             bind_ip=body.bind_ip.strip() or "0.0.0.0", serial_port=body.serial_port.strip(),
             max_rate_hz=body.max_rate_hz, max_commands_per_s=body.max_commands_per_s,
+            protect=body.protect, latency_limit_ms=body.latency_limit_ms, max_inflight=body.max_inflight,
             mappings=mappings,
         )
         controller.save()
@@ -747,6 +755,18 @@ def create_app(controller, discover=None, updater: Updater | None = None, bind_h
         result["warning"] = warning
         result["status"] = await dmx_status()
         return result
+
+    @app.post("/api/dmx/pause")
+    async def api_dmx_pause(body: DmxPauseBody):
+        """The kill switch: stop (or restart) all DMX-driven writes to the Lutron system."""
+        engine = getattr(controller, "dmx", None)
+        if engine is None:
+            raise HTTPException(409, "DMX input is not running")
+        if body.paused:
+            await engine.pause()
+        else:
+            engine.resume()
+        return await dmx_status()
 
     @app.post("/api/dmx/auto-assign")
     async def api_dmx_auto_assign(body: AutoAssignBody):

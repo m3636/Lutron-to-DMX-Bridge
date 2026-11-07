@@ -501,6 +501,7 @@ async def test_engine_total_command_budget_serves_zones_in_turn():
     zones = [str(i) for i in range(n)]
     eng, drv = make_engine(auto_assign(zones), rate=5.0, zones=zones)
     eng.config.max_commands_per_s = 10.0
+    eng.config.max_inflight = 0  # the in-flight window has its own tests (test_protect.py)
     eng._init_zone_states()
     # A cue that takes every zone from 0 to 100% at once: one burst, nothing held back.
     eng.process_frame(ramp_frame(n, 255), 0.0)
@@ -661,6 +662,7 @@ async def test_engine_reports_held_back_zones_and_command_rate():
     zones = [str(i) for i in range(n)]
     eng, drv = make_engine(auto_assign(zones), rate=5.0, zones=zones)
     eng.config.max_commands_per_s = 10.0
+    eng.config.max_inflight = 0  # the in-flight window has its own tests (test_protect.py)
     eng._init_zone_states()
     eng.process_frame(ramp_frame(n, 255), 0.0)
     assert await eng.flush(0.0) == n  # the opening burst fits the bucket: nothing held
@@ -684,6 +686,7 @@ async def test_clear_pending_drops_held_back_zones_until_the_source_moves():
     zones = [str(i) for i in range(n)]
     eng, drv = make_engine(auto_assign(zones), rate=5.0, zones=zones)
     eng.config.max_commands_per_s = 10.0
+    eng.config.max_inflight = 0  # the in-flight window has its own tests (test_protect.py)
     eng._init_zone_states()
     eng.process_frame(ramp_frame(n, 255), 0.0)
     assert await eng.flush(0.0) == n

@@ -164,6 +164,13 @@ class DmxConfig:
     max_rate_hz: float = 5.0
     #: max commands per second sent to the Lutron system for all zones together (0 = no limit)
     max_commands_per_s: float = 20.0
+    #: slow down when the Lutron system falls behind, cap commands in flight, and pause on a DMX storm
+    #: (dmx/protect.py). Turn off only for a repeater you know can take the limit above.
+    protect: bool = True
+    #: round trip (ms) above which the repeater counts as behind and the command rate is cut
+    latency_limit_ms: float = 500.0
+    #: most level commands written but not yet echoed by the repeater (0 = no cap)
+    max_inflight: int = 40
     mappings: list[DmxFixtureMapping] = field(default_factory=list)
 
 

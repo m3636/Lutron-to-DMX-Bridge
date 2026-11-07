@@ -5,7 +5,7 @@ from __future__ import annotations
 import abc
 from typing import Awaitable, Callable, Union
 
-from ..metrics import DriverMetrics
+from ..metrics import DriverMetrics, LinkLoad
 from ..models import Area, Keypad, Schedule, SystemInventory, Zone
 
 # Called with (zone_id, level_percent) whenever the system reports a level change.
@@ -45,6 +45,22 @@ class LutronDriver(abc.ABC):
     def inflight(self) -> int:
         """Commands sent that the system has not acknowledged yet (0 if unknown)."""
         return 0
+
+    def load(self) -> LinkLoad:
+        """How far behind the system is: latency of the newest probe and commands in flight.
+
+        The DMX engine slows down and stops sending on this (``dmx/protect.py``). Drivers
+        that can see a backlog building before any reply arrives should override it.
+        """
+        return LinkLoad(self.metrics.latency.fresh_last(), self.inflight())
+
+    async def reset_connection(self) -> bool:
+        """Drop the connection abruptly so data still in the network buffers is discarded.
+
+        Returns True if there was a connection to reset. Drivers that reconnect by themselves
+        do so afterwards. Commands the system has already accepted cannot be recalled.
+        """
+        return False
 
     def queued(self) -> int:
         """Commands this app holds back from the system (0 if the driver never queues)."""

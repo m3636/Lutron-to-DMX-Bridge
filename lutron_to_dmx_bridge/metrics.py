@@ -21,11 +21,24 @@ LATENCY_HISTORY = 120.0
 #: How many warning/error lines are kept for the Status tab.
 LOG_KEEP = 20
 
+#: A latency sample older than this no longer says how busy the system is right now.
+LOAD_STALE_S = 2.5
+
 STARTED_AT = time.time()
 
 
 def uptime_s() -> float:
     return max(0.0, time.time() - STARTED_AT)
+
+
+@dataclass
+class LinkLoad:
+    """How far behind the Lutron system is, as far as the driver can tell (see ``dmx/protect.py``)."""
+
+    #: round trip of the latest probe, or how long an unanswered probe has waited (None = unknown)
+    latency_ms: float | None = None
+    #: level commands written that the system has not echoed yet
+    inflight: int = 0
 
 
 class RateWindow:
@@ -67,6 +80,13 @@ class LatencyStats:
         self.last = ms
         self._last_at = now
         self._samples.append((now, ms))
+
+    def fresh_last(self, max_age: float = LOAD_STALE_S, now: float | None = None) -> float | None:
+        """The latest sample in ms, or None when it is older than `max_age` seconds."""
+        now = time.monotonic() if now is None else now
+        if self.last is None or self._last_at is None or now - self._last_at > max_age:
+            return None
+        return self.last
 
     def snapshot(self, now: float | None = None) -> dict:
         """`age_s` is how long ago the last sample arrived (None before the first).

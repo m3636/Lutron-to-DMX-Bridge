@@ -36,6 +36,7 @@ import logging
 import os
 import re
 import socket
+import struct
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -43,6 +44,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
+from ..metrics import LOAD_STALE_S, LinkLoad
 from ..models import Area, Keypad, Schedule, SystemInventory, Zone, ZoneType
 from .base import DriverError, LutronDriver
 
@@ -262,6 +264,13 @@ class RA2Driver(LutronDriver):
     #: a command with no echo after this long stops counting as in flight (a command
     #: that changes nothing may never be echoed)
     inflight_expiry = 5.0
+    #: a ?SYSTEM,1 probe with no reply after this long is forgotten. Long, because a repeater that
+    #: is minutes behind still answers in order and the replies must pair with the right send.
+    probe_expiry = 60.0
+    #: most probes waiting for a reply at once: the oldest one's age already says how far behind it is
+    max_probes_waiting = 8
+    #: the in-flight count the DMX engine's window uses forgets commands older than this
+    window_expiry = 2.0
     #: how long refresh_schedules waits for the repeater's ~TIMECLOCK replies
     schedule_query_timeout = 3.0
 
@@ -270,6 +279,7 @@ class RA2Driver(LutronDriver):
         config: Any,
         *,
         probe_interval: float = 2.0,
+        probe_fast: float = 0.5,
         connect_timeout: float = 10.0,
         reconnect_max_delay: float = 30.0,
         http_port: int = HTTP_PORT,
@@ -282,6 +292,8 @@ class RA2Driver(LutronDriver):
         super().__init__()
         self.config = config
         self.probe_interval = probe_interval
+        #: probe spacing while commands are flowing or replies are outstanding
+        self.probe_fast = probe_fast
         self.http_port = http_port
         self._cache_dir = cache_dir
         self.read_timeout = read_timeout
@@ -595,9 +607,17 @@ class RA2Driver(LutronDriver):
         # of commands ahead of it, is the latency the GUI graphs. It doubles as the
         # keepalive: some network gear drops idle TCP sessions, and a dead socket
         # surfaces here quickly (the write fails -> reconnect).
+        last = time.monotonic()
+        tick = min(self.probe_interval, self.probe_fast)
         while not self._closing:
-            await asyncio.sleep(self.probe_interval)
-            if self.connected:
+            await asyncio.sleep(tick)
+            # Probe often while commands are flowing or replies are outstanding, so a backlog shows
+            # up within a fraction of a second; rarely when idle.
+            busy = self.metrics.commands.rate() > 0 or bool(self._probes_sent)
+            if time.monotonic() - last < (tick if busy else self.probe_interval) - 1e-3:
+                continue
+            last = time.monotonic()
+            if self.connected and len(self._probes_sent) < self.max_probes_waiting:
                 try:
                     await self._send(PROBE_COMMAND)
                 except Exception as exc:
@@ -664,7 +684,7 @@ class RA2Driver(LutronDriver):
                             self.metrics.commands.add(1, now)
                         elif c == PROBE_COMMAND:
                             # a reply lost to a dropped line must not pair every later probe with the wrong send
-                            while self._probes_sent and now - self._probes_sent[0] > self.inflight_expiry:
+                            while self._probes_sent and now - self._probes_sent[0] > self.probe_expiry:
                                 self._probes_sent.popleft()
                             self._probes_sent.append(now)
                         writer.write(c.encode("ascii", errors="replace") + b"\r\n")
@@ -695,9 +715,44 @@ class RA2Driver(LutronDriver):
         self._waiters.clear()
         return dropped
 
-    def inflight(self) -> int:
-        cutoff = time.monotonic() - self.inflight_expiry
+    def inflight(self, max_age: float | None = None) -> int:
+        cutoff = time.monotonic() - (self.inflight_expiry if max_age is None else max_age)
         return sum(1 for t in self._output_sent_at.values() if t >= cutoff)
+
+    def load(self) -> LinkLoad:
+        """Latency of the newest probe or, if a probe is still waiting, how long it has waited.
+
+        The second part matters: when the repeater stalls no replies arrive, so the newest
+        round trip would look fine while the queue grows. The oldest unanswered probe cannot hide it.
+        """
+        now = time.monotonic()
+        lat = self.metrics.latency.fresh_last(LOAD_STALE_S, now)
+        if self._probes_sent:
+            waited = (now - self._probes_sent[0]) * 1000.0
+            lat = waited if lat is None else max(lat, waited)
+        return LinkLoad(lat, self.inflight(self.window_expiry))
+
+    async def reset_connection(self) -> bool:
+        """Abort the socket with a TCP reset (SO_LINGER 0) instead of a polite close.
+
+        A normal close still delivers everything in the network buffers, so a repeater that was
+        sent a storm keeps working through it. A reset throws away what has not been delivered
+        (our send buffer) and, on stacks that free it on reset, what the repeater has not read yet.
+        What the repeater has already accepted into its own queue is out of reach either way. The
+        read loop notices and reconnects.
+        """
+        writer = self._writer
+        if writer is None:
+            return False
+        sock = writer.get_extra_info("socket")
+        if sock is not None:
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            except OSError:
+                pass
+        log.warning("Resetting the connection to the repeater to discard commands still on the wire")
+        writer.transport.abort()
+        return True
 
     @staticmethod
     def output_command(zone_id: str, level: float, fade: float | None = None) -> str:

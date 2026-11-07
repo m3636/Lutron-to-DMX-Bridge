@@ -292,7 +292,7 @@ async def test_probe_replies_pair_first_in_first_out(driver):
 
 
 async def test_probes_waiting_too_long_are_forgotten_when_the_next_one_is_sent(driver):
-    driver._probes_sent.append(time.monotonic() - 60)  # its reply was lost
+    driver._probes_sent.append(time.monotonic() - driver.probe_expiry - 1)  # its reply was lost
     await driver._send("?SYSTEM,1")
     assert len(driver._probes_sent) == 1
 
@@ -349,11 +349,15 @@ async def test_dmx_ramp_over_telnet_is_budgeted_and_pipelined(driver, repeater):
     while t <= 6.0:  # a 6 s ramp at 40 fps, flushed on the engine's own clock
         eng.process_frame(bytes([round(255 * t / 6.0)]) * n + bytes(512 - n), t)
         await eng.flush(t)
+        await asyncio.sleep(0.004)  # real time for the echoes: the in-flight window waits for them
         t += 0.025
+    for k in range(40):  # let the last targets out
+        await eng.flush(t + k * 0.05)
+        await asyncio.sleep(0.01)
     await repeater.wait_for(lambda: repeater.commands and
                             repeater.levels[zone_ids[0]] == 100.0 or len(repeater.commands) > 100)
     outputs = [c for c in repeater.commands if c.startswith("#OUTPUT")]
-    assert 20 <= len(outputs) <= 20 * 6 + 2 * n  # budget, not 5 Hz x zones x 6 s
+    assert 20 <= len(outputs) <= 20 * 8 + 2 * n  # budget over the ramp and the 2 s tail, not 5 Hz x zones x 6 s
     ramp = [c.split(",") for c in outputs if len(c.split(",")) == 5]
     assert ramp and all(0 < float(c[4]) <= 5 for c in ramp)  # fade given in seconds
 
