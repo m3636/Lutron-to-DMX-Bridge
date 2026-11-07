@@ -296,6 +296,10 @@ details.area[open] > summary::before { transform: rotate(45deg); }
   padding: 12px 14px; display: grid; gap: 12px;
 }
 .status-section h4 { margin: 0 0 4px; font-size: .72rem; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); display: flex; align-items: center; gap: 7px; }
+.update-action { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 12px 0; }
+.update-action a.btn { text-decoration: none; }
+.update-action-why { flex: 1; min-width: 200px; font-size: .84rem; color: var(--muted); overflow-wrap: anywhere; }
+.update-action-why.ok { color: var(--ok); } .update-action-why.warn { color: var(--warn); }
 .kv { display: grid; grid-template-columns: fit-content(55%) 1fr; gap: 3px 12px; font-size: .84rem; margin: 0; }
 .kv dt { color: var(--muted); }
 .kv dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }

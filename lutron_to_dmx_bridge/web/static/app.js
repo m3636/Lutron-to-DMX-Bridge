@@ -1567,6 +1567,7 @@
     if (!dl || state.tab !== "settings") return;
     const u = state.update;
     clear(dl);
+    renderUpdateAction(u);
     if (!u || u.disabled) return;
     const row = (k, v, cls) => { dl.appendChild(h("dt", { text: k })); dl.appendChild(h("dd", { class: cls || "", text: v })); };
     row("Installed version", u.current);
@@ -1574,6 +1575,39 @@
     row("Latest release", u.available ? u.latest + " (newer)" : "none newer than yours", u.available ? "warn" : "ok");
     row("Last checked", u.checked_at ? new Date(u.checked_at).toLocaleString() : "not yet");
     if (u.check_error) row("Last check", u.check_error, "warn");
+  }
+
+  /** The Update now button on the Settings card: always visible, and says why when it can't be pressed. */
+  function renderUpdateAction(u) {
+    const btn = $("#btn-update-settings-now"), why = $("#update-action-why"), notes = $("#update-settings-notes");
+    if (!btn) return;
+    let enabled = false, reason = "", cls = "";
+    const busy = u && (UPDATING.includes(u.phase) || u.phase === "restarting" || u.phase === "installed");
+    if (!u) { reason = "Waiting for the app to report its update status…"; }
+    else if (u.disabled) { reason = "Updating is not available in this mode (the app was started without the update checker)."; }
+    else if (busy) { reason = u.message || "Updating…"; }
+    else if (u.available && u.install && u.install.can_auto) {
+      enabled = true; cls = "warn";
+      reason = "Version " + u.latest + " is available (you have " + u.current + ")." +
+        (u.dismissed ? " You dismissed the banner for it, but you can still install it here." : "");
+    } else if (u.available) {
+      reason = "Version " + u.latest + " is available (you have " + u.current + "), but this copy can't install it by itself. " +
+        ((u.install && u.install.manual) || "Download it from the release page.");
+      cls = "warn";
+    } else if (u.check_error) { reason = "Can't tell whether there is a newer version: " + u.check_error; cls = "warn"; }
+    else if (!u.checked_at) { reason = "Not checked yet. Press Check now to look for a newer version."; }
+    else { reason = "You are up to date (version " + u.current + ")."; cls = "ok"; }
+    btn.disabled = !enabled;
+    btn.textContent = u && u.available ? "Update now to " + u.latest : "Update now";
+    btn.title = reason;
+    why.textContent = reason;
+    why.className = "update-action-why " + cls;
+    const showNotes = !!(u && u.available && u.notes_url);
+    notes.classList.toggle("hidden", !showNotes);
+    if (showNotes) {
+      notes.href = u.notes_url;
+      notes.textContent = u.install && u.install.can_auto ? "Release notes" : "Open release page";
+    }
   }
 
   async function loadUpdateSettings() {
@@ -1712,21 +1746,21 @@
   async function updateNow(confirmed) {
     const u = state.update;
     if (!u || !u.latest) return;
-    const btn = $("#btn-update-now");
-    btn.disabled = true;
+    const btn = $("#btn-update-now"), sbtn = $("#btn-update-settings-now");
+    btn.disabled = true; sbtn.disabled = true;
     try {
       const res = await api("POST", "update/apply", { version: u.latest, confirm: !!confirmed });
       if (res.needs_confirm) {
         const ok = confirm("Update to " + u.latest + " now?\n\n" + res.reasons.join("\n\n") +
           "\n\nLutron To DMX Bridge will close and reopen. Your settings and scenes are kept.");
-        btn.disabled = false;
+        btn.disabled = false; renderUpdateAction(state.update);
         if (ok) updateNow(true);
         return;
       }
       if (res.update) renderUpdate(res.update);
     } catch (e) {
       toast(e.message, true);
-      btn.disabled = false;
+      btn.disabled = false; renderUpdateAction(state.update);
     }
   }
 
@@ -1784,6 +1818,7 @@
     $("#drv-kind").addEventListener("change", updateKindVisibility);
     $("#btn-drv-save").addEventListener("click", saveDriver);
     $("#btn-update-now").addEventListener("click", () => updateNow(false));
+    $("#btn-update-settings-now").addEventListener("click", () => updateNow(false));
     $("#btn-update-dismiss").addEventListener("click", dismissUpdate);
     $("#btn-update-check").addEventListener("click", checkUpdateNow);
     $("#btn-upd-save").addEventListener("click", saveUpdateSettings);

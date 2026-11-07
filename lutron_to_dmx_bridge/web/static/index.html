@@ -299,6 +299,11 @@
         <h3>Updates</h3>
         <p class="hint">Lutron To DMX Bridge runs entirely on your own network. The one exception is this: it asks GitHub whether a newer release exists (a single request for the public release information, on start-up and every 12 hours) and sends nothing about you or your lights. Turn automatic checks off below and the app only contacts GitHub when you press <b>Check now</b>. An update is only ever installed when you click <b>Update now</b>; your settings and scenes are not touched, and the previous version is kept.</p>
         <dl class="kv" id="update-facts"></dl>
+        <div class="update-action" id="update-action">
+          <button class="btn primary" id="btn-update-settings-now" disabled>Update now</button>
+          <a class="btn ghost hidden" id="update-settings-notes" href="#" target="_blank" rel="noopener noreferrer">Release notes</a>
+          <span class="update-action-why" id="update-action-why"></span>
+        </div>
         <div class="form-grid">
           <label class="check wide"><input type="checkbox" id="upd-check"> Check for updates automatically</label>
           <label class="wide">GitHub access token (optional, only while the repository is private)
