@@ -394,6 +394,9 @@ def create_app(controller, discover=None, updater: Updater | None = None, bind_h
         link: dict = {}
         with contextlib.suppress(Exception):
             link = d.link_status()
+        queue: dict = {}
+        with contextlib.suppress(Exception):
+            queue = controller.queue_status()
         return {
             "system_name": getattr(d, "system_name", "Lutron"),
             "connected": connected,
@@ -402,6 +405,7 @@ def create_app(controller, discover=None, updater: Updater | None = None, bind_h
             "dmx": await dmx_status(),
             "schedule_set": controller.schedule_sets.status(),
             "lutron": link,
+            "queue": queue,
             "alerts": log_counter.snapshot(),
             "update": update_state(),
             "app": {"version": __version__, "started_at": STARTED_AT, "uptime_s": round(uptime_s()),
@@ -417,6 +421,12 @@ def create_app(controller, discover=None, updater: Updater | None = None, bind_h
     async def api_alerts_clear():
         log_counter.clear()
         return {"ok": True}
+
+    @app.post("/api/queue/clear")
+    async def api_queue_clear():
+        """Drop the level commands waiting inside the app; see Controller.clear_queue."""
+        result = await driver_call(controller.clear_queue())
+        return {"ok": True, **result, "status": await status_payload()}
 
     @app.get("/api/inventory")
     async def api_inventory():

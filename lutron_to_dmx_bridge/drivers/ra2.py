@@ -313,6 +313,9 @@ class RA2Driver(LutronDriver):
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._lock = asyncio.Lock()
+        #: _send() calls waiting for the lock, and the level commands of the one writing now
+        self._waiters: set[_Waiter] = set()
+        self._writing = 0
         #: zone id -> monotonic time of the last #OUTPUT we sent, to log how long the echo takes
         #: and to count commands in flight
         self._output_sent_at: dict[str, float] = {}
@@ -656,25 +659,61 @@ class RA2Driver(LutronDriver):
         Replies are not awaited - they arrive asynchronously via the reader
         (monitoring) which keeps multi-zone commands as simultaneous as possible.
         """
-        async with self._lock:
-            writer = self._writer
-            if writer is None or not self._logged_in:
-                raise DriverError("Not connected to the RadioRA 2 repeater")
-            now = time.monotonic()
-            for c in commands:
-                if c.startswith("#OUTPUT,"):
-                    self._output_sent_at[c.split(",", 2)[1]] = now
-                    self.metrics.commands.add(1, now)
-                elif c == PROBE_COMMAND:
-                    # a reply lost to a dropped line must not pair every later probe with the wrong send
-                    while self._probes_sent and now - self._probes_sent[0] > self.probe_expiry:
-                        self._probes_sent.popleft()
-                    self._probes_sent.append(now)
-                writer.write(c.encode("ascii", errors="replace") + b"\r\n")
-            try:
-                await writer.drain()
-            except (ConnectionError, OSError) as exc:
-                raise DriverError(f"RA2 send failed: {exc}") from exc
+        waiter = _Waiter(sum(1 for c in commands if c.startswith("#OUTPUT,")))
+        self._waiters.add(waiter)
+        try:
+            async with self._lock:
+                self._waiters.discard(waiter)
+                outputs = waiter.outputs
+                if waiter.dropped:
+                    # clear_pending() ran while this call waited: its level commands are
+                    # dropped, anything else (schedules, queries) still goes out
+                    commands = tuple(c for c in commands if not c.startswith("#OUTPUT,"))
+                    outputs = 0
+                    if not commands:
+                        return
+                writer = self._writer
+                if writer is None or not self._logged_in:
+                    raise DriverError("Not connected to the RadioRA 2 repeater")
+                self._writing = outputs
+                try:
+                    now = time.monotonic()
+                    for c in commands:
+                        if c.startswith("#OUTPUT,"):
+                            self._output_sent_at[c.split(",", 2)[1]] = now
+                            self.metrics.commands.add(1, now)
+                        elif c == PROBE_COMMAND:
+                            # a reply lost to a dropped line must not pair every later probe with the wrong send
+                            while self._probes_sent and now - self._probes_sent[0] > self.probe_expiry:
+                                self._probes_sent.popleft()
+                            self._probes_sent.append(now)
+                        writer.write(c.encode("ascii", errors="replace") + b"\r\n")
+                    try:
+                        await writer.drain()
+                    except (ConnectionError, OSError) as exc:
+                        raise DriverError(f"RA2 send failed: {exc}") from exc
+                finally:
+                    self._writing = 0
+        finally:
+            self._waiters.discard(waiter)
+
+    def queued(self) -> int:
+        """Level commands this app is holding: waiting behind another write, or written
+        but not yet accepted by the network stack (the repeater is not reading)."""
+        return self._writing + sum(w.outputs for w in self._waiters)
+
+    async def clear_pending(self) -> int:
+        """Drop the level commands waiting for the connection and return how many.
+
+        Commands already handed to the socket cannot be recalled, and neither can
+        the repeater's own queue.
+        """
+        dropped = 0
+        for w in self._waiters:
+            w.dropped = True
+            dropped += w.outputs
+        self._waiters.clear()
+        return dropped
 
     def inflight(self, max_age: float | None = None) -> int:
         cutoff = time.monotonic() - (self.inflight_expiry if max_age is None else max_age)
@@ -793,6 +832,16 @@ class RA2Driver(LutronDriver):
 
 # -- helpers ---------------------------------------------------------------
 _DOWNLOAD_LOCK = threading.Lock()
+
+
+class _Waiter:
+    """A _send() call waiting for the command lock."""
+
+    __slots__ = ("outputs", "dropped")
+
+    def __init__(self, outputs: int) -> None:
+        self.outputs = outputs  # its #OUTPUT commands
+        self.dropped = False  # clear_pending() ran while it waited
 
 
 class _Cancelled(Exception):

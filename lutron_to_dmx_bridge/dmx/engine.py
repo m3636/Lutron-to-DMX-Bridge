@@ -188,6 +188,10 @@ class _ZoneState:
     rev_anchor: float | None = None
     rev_dir: int = 0
 
+    # The DMX value the user cleared from the queue: it is not sent until the
+    # source changes it (see DmxEngine.clear_pending).
+    dismissed: float | None = None
+
     def light_at(self, now: float) -> float | None:
         """Where our last command should have the light at `now`."""
         if self.plan_x1 is None:
@@ -344,6 +348,8 @@ class DmxEngine:
             st = self._zones.get(zone_id)
             if st is None:  # mapping added at runtime
                 st = self._zones[zone_id] = _ZoneState(sent=None)
+            if st.dismissed is not None and abs(level - st.dismissed) >= 1e-6:
+                st.dismissed = None  # the source moved on: its new value counts again
             if st.target != level:
                 if (st.target is not None and abs(level - st.target) <= RAMP_STEP
                         and now - st.target_changed_at <= RAMP_GAP):
@@ -372,12 +378,49 @@ class DmxEngine:
             st.rev_dir, st.rev_anchor = -st.rev_dir, level
             self.protector.note_reversal(now)
 
+    # -- clearing the queue ----------------------------------------------
+    @staticmethod
+    def _dismissed(st: _ZoneState) -> bool:
+        return (st.dismissed is not None and st.target is not None
+                and abs(st.target - st.dismissed) < 1e-6)
+
+    def _is_pending(self, st: _ZoneState) -> bool:
+        """True if the zone's DMX value has not reached the Lutron system yet."""
+        if st.target is None or self._dismissed(st):
+            return False
+        return st.sent is None or abs(st.target - st.sent) >= 1e-6
+
+    def pending(self) -> int:
+        """Mapped lights whose latest DMX value is still waiting to be sent: held back by
+        the rate limits, or not yet past the small-move hold."""
+        return sum(1 for st in self._zones.values() if self._is_pending(st))
+
+    def clear_pending(self, now: float | None = None) -> dict:
+        """Forget every DMX value that is waiting to be sent.
+
+        Each pending light keeps the level it has; its current DMX value is ignored until
+        the source changes it, so a console that keeps sending the same frame does not
+        refill the queue. Commands already written to the repeater are not touched.
+        Returns the lights dropped and the lights whose last command is still fading
+        on the repeater (a fade cannot be recalled).
+        """
+        now = self._clock() if now is None else now
+        dropped = fading = 0
+        for st in self._zones.values():
+            if self._is_pending(st):
+                st.dismissed = st.target
+                dropped += 1
+            if st.plan_fade > 0 and now < st.plan_t0 + st.plan_fade:
+                fading += 1
+        self.held_back = 0
+        return {"dropped": dropped, "fading": fading}
+
     # -- sending ---------------------------------------------------------
     def _due(self, now: float) -> dict[str, tuple[float, float | None]]:
         interval = self._min_interval()
         due: dict[str, tuple[float, float | None]] = {}
         for zone_id, st in self._zones.items():
-            if st.target is None:
+            if st.target is None or self._dismissed(st):
                 continue
             if st.sent is not None:
                 if abs(st.target - st.sent) < 1e-6:
@@ -523,6 +566,7 @@ class DmxEngine:
                 st.plan_t0, st.plan_x1, st.plan_fade = now, level, fade or 0.0
                 st.sent = level
                 st.sent_target = due[zone_id][0]
+                st.dismissed = None
                 st.last_send = now
             self.commands_sent += len(levels)
             self.commands.add(len(levels), now)
@@ -557,8 +601,15 @@ class DmxEngine:
         self._wake.set()
 
     async def _release_backlog(self, driver: Any, load: LinkLoad) -> None:
-        """Pausing because the repeater is behind: drop the connection so what is still in the
-        network buffers is discarded rather than delivered after the pause."""
+        """Pausing: drop the level commands still waiting inside the driver and, if the repeater
+        is behind, drop the connection so what is still in the network buffers is discarded
+        rather than delivered after the pause."""
+        clear = getattr(driver, "clear_pending", None)
+        if clear is not None:
+            try:
+                await clear()
+            except Exception:
+                log.exception("Could not clear the driver's waiting commands")
         limit = float(getattr(self.config, "latency_limit_ms", 500.0) or 500.0)
         behind = (load.latency_ms or 0.0) > limit or load.inflight > 5
         reset = getattr(driver, "reset_connection", None)
@@ -611,6 +662,8 @@ class DmxEngine:
             "protect": {**self.protector.status(self._clock()), "enabled": self._protecting(),
                         "latency_limit_ms": getattr(cfg, "latency_limit_ms", 500.0),
                         "max_inflight": getattr(cfg, "max_inflight", 40)},
+
+            "pending": self.pending(),
             "max_rate_hz": cfg.max_rate_hz,
             "max_commands_per_s": cfg.max_commands_per_s,
             "mapped_zones": len(self._zones),

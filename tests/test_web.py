@@ -484,3 +484,48 @@ def test_dmx_pause_endpoint_needs_a_running_engine_and_toggles_it(ctx):
     assert r.json()["paused"] is False and r.json()["protect"]["state"] in ("ok", "backoff")
     assert client.post("/api/dmx/pause", json={}).status_code == 422
     client.portal.call(ctl.dmx.stop)
+
+def test_status_reports_the_queue(ctx):
+    client, _, _ = ctx
+    assert client.get("/api/status").json()["queue"] == {
+        "dmx_pending": 0, "driver_queued": 0, "waiting": 0, "inflight": 0}
+
+
+def test_clear_queue_endpoint(ctx):
+    client, _, _ = ctx
+    r = client.post("/api/queue/clear")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True and body["dropped"] == 0 and body["fading"] == 0
+    assert body["status"]["queue"]["waiting"] == 0
+
+
+def test_clear_queue_drops_waiting_dmx_values_and_driver_commands(ctx):
+    client, ctl, driver = ctx
+
+    class FakeEngine:
+        cleared = False
+
+        def pending(self):
+            return 0 if self.cleared else 4
+
+        def clear_pending(self):
+            self.cleared = True
+            return {"dropped": 4, "fading": 2}
+
+    async def clear_pending():
+        return 3
+
+    ctl.dmx = FakeEngine()
+    driver.queued = lambda: 3
+    driver.clear_pending = clear_pending
+    assert client.get("/api/status").json()["queue"]["waiting"] == 7
+    body = client.post("/api/queue/clear").json()
+    assert (body["dmx_dropped"], body["driver_dropped"], body["dropped"], body["fading"]) == (4, 3, 7, 2)
+    ctl.dmx = None
+
+
+def test_clear_queue_button_is_in_the_page_and_script(ctx):
+    client, _, _ = ctx
+    assert 'id="btn-queue-clear"' in client.get("/").text
+    assert "queue/clear" in client.get("/static/app.js").text

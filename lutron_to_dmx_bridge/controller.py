@@ -134,6 +134,32 @@ class Controller:
         level = max(0.0, min(100.0, float(level)))
         await self.driver.set_level(zone_id, level, fade)
 
+    # -- command queue ---------------------------------------------------
+    def queue_status(self) -> dict:
+        """What this app is holding back from the Lutron system, for the GUI."""
+        dmx = self.dmx.pending() if self.dmx is not None else 0
+        queued = self.driver.queued()
+        return {"dmx_pending": dmx, "driver_queued": queued, "waiting": dmx + queued,
+                "inflight": self.driver.inflight()}
+
+    async def clear_queue(self) -> dict:
+        """Drop every level command this app has not sent yet.
+
+        That is the DMX values waiting for the rate limits and any commands waiting
+        for the connection. Commands already written to the Lutron system cannot be
+        recalled, so `inflight` (sent, not echoed yet) and `fading` (lights still
+        fading from an earlier command) are reported for the GUI to explain.
+        """
+        dmx = self.dmx.clear_pending() if self.dmx is not None else {"dropped": 0, "fading": 0}
+        driver = await self.driver.clear_pending()
+        result = {"dmx_dropped": dmx["dropped"], "driver_dropped": driver,
+                  "dropped": dmx["dropped"] + driver, "fading": dmx["fading"],
+                  "inflight": self.driver.inflight()}
+        if result["dropped"]:
+            log.info("Cleared the Lutron queue: %d waiting (%d DMX values, %d commands) dropped",
+                     result["dropped"], dmx["dropped"], driver)
+        return result
+
     # -- custom scenes (stored by this app, not in Lutron) ---------------
     def scene(self, scene_id: str) -> SceneConfig | None:
         return next((s for s in self.config.scenes if s.id == scene_id), None)

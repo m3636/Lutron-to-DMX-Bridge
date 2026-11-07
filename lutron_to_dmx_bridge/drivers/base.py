@@ -62,6 +62,17 @@ class LutronDriver(abc.ABC):
         """
         return False
 
+    def queued(self) -> int:
+        """Commands this app holds back from the system (0 if the driver never queues)."""
+        return 0
+
+    async def clear_pending(self) -> int:
+        """Drop level commands still waiting inside this app. Returns how many.
+
+        Anything already written to the system is out of reach and is not counted.
+        """
+        return 0
+
     def link_status(self) -> dict:
         """Counters for the GUI's status area: rates, round-trip latency, reconnects."""
         return self.metrics.snapshot(self.inflight())

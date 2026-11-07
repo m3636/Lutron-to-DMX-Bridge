@@ -388,3 +388,32 @@ async def test_link_metrics_across_a_reconnect(driver, repeater):
     st = driver.link_status()
     assert st["reconnects"] == 1 and st["reconnect_attempts"] == 0
     assert st["retry_in_s"] is None and st["connected_for_s"] is not None
+
+
+async def test_clear_pending_drops_level_commands_waiting_for_the_connection(driver, repeater):
+    assert driver.queued() == 0
+    await driver._lock.acquire()  # a write that is stuck: the repeater is not reading
+    try:
+        waiting = [asyncio.create_task(driver.set_level("40", 10.0)),
+                   asyncio.create_task(driver.set_levels({"40": 20.0, "50": 30.0})),
+                   asyncio.create_task(driver._send("?SYSTEM,1"))]
+        await asyncio.sleep(0.05)
+        assert driver.queued() == 3  # the query is not a level command
+        assert await driver.clear_pending() == 3
+        assert driver.queued() == 0
+    finally:
+        driver._lock.release()
+    await asyncio.gather(*waiting)
+    await repeater.wait_for(lambda: "?SYSTEM,1" in repeater.commands)
+    await asyncio.sleep(0.05)
+    assert not any(c.startswith("#OUTPUT") for c in repeater.commands)
+    assert driver.queued() == 0
+    # Sending works as before afterwards.
+    await driver.set_level("40", 55.0)
+    await repeater.wait_for(lambda: any(c.startswith("#OUTPUT,40,1,55") for c in repeater.commands))
+
+
+async def test_clear_pending_leaves_commands_that_are_already_written(driver, repeater):
+    await driver.set_level("40", 40.0)
+    assert await driver.clear_pending() == 0
+    await repeater.wait_for(lambda: any(c.startswith("#OUTPUT,40,1,40") for c in repeater.commands))
