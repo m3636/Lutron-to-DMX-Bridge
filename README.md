@@ -161,7 +161,7 @@ A RadioRA 2 repeater works through its telnet commands one at a time and passes 
 ## Reading the status area
 The chips in the top right are always visible. Green is fine, amber is worth a look, red is a problem.
 
-- **Lutron** shows the median time the repeater takes to echo a command back (over the last minute). Amber if the slowest 5% take over 500 ms; red when not connected. "In flight" in the details is commands sent that have not been echoed yet. The repeater's own internal queue cannot be seen, so a growing in-flight count with rising latency is the sign that it is falling behind.
+- **Lutron** shows the median round-trip latency to the repeater over the last minute: every couple of seconds, busy or idle, the app asks the repeater for its clock and times the answer, so commands queued ahead of it show up as higher latency. The Status tab graphs it for the last 2 minutes. Amber if the slowest 5% take over 500 ms; red when not connected. "In flight" in the details is commands sent that have not been echoed yet. The repeater's own internal queue cannot be seen, so a growing in-flight count with rising latency is the sign that it is falling behind.
 - **DMX in** shows frames per second and the universe. Amber with "no data" when no packet has arrived for 2 seconds, and the details list any other universe it is seeing (a common cause of a silent input).
 - **Output** shows commands per second sent to the Lutron system against the limit from the DMX tab, plus how many lights are waiting because of that limit.
 - **Alerts** counts warnings and errors logged since the app started, or since you pressed **Clear alerts** on the Status tab, which also lists the latest ones.

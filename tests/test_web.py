@@ -140,7 +140,7 @@ def test_status(ctx):
     assert st["driver"] == {"kind": "ra2", "host": "10.0.0.5"}
     assert st["dmx"]["enabled"] is False
     assert st["app"]["version"] and st["app"]["uptime_s"] >= 0 and st["app"]["clients"] == 0
-    assert set(st["lutron"]) >= {"connected_for_s", "commands_per_s", "echo", "inflight", "reconnect_attempts"}
+    assert set(st["lutron"]) >= {"connected_for_s", "commands_per_s", "latency", "inflight", "reconnect_attempts"}
     assert set(st["alerts"]) == {"warnings", "errors", "recent"}
 
 

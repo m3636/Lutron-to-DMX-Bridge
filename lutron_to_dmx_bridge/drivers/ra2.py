@@ -36,6 +36,7 @@ import re
 import time
 import urllib.request
 import xml.etree.ElementTree as ET
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +46,8 @@ from .base import DriverError, LutronDriver
 log = logging.getLogger(__name__)
 
 DEFAULT_PORT = 23
+#: cheap query the repeater always answers (~SYSTEM,1,<time>); its round trip is the latency graph
+PROBE_COMMAND = "?SYSTEM,1"
 PROMPT = b"GNET> "
 LOGIN_PROMPT = b"login: "
 PASSWORD_PROMPT = b"password: "
@@ -251,13 +254,13 @@ class RA2Driver(LutronDriver):
         self,
         config: Any,
         *,
-        keepalive_interval: float = 60.0,
+        probe_interval: float = 2.0,
         connect_timeout: float = 10.0,
         reconnect_max_delay: float = 30.0,
     ) -> None:
         super().__init__()
         self.config = config
-        self.keepalive_interval = keepalive_interval
+        self.probe_interval = probe_interval
         self.connect_timeout = connect_timeout
         self.reconnect_max_delay = reconnect_max_delay
 
@@ -267,11 +270,15 @@ class RA2Driver(LutronDriver):
         self._writer: asyncio.StreamWriter | None = None
         self._lock = asyncio.Lock()
         #: zone id -> monotonic time of the last #OUTPUT we sent, to log how long the echo takes
+        #: and to count commands in flight
         self._output_sent_at: dict[str, float] = {}
+        #: monotonic send times of the ?SYSTEM,1 probes still waiting for their ~SYSTEM reply
+        #: (the repeater answers in order, so replies pair with probes first-in first-out)
+        self._probes_sent: deque[float] = deque()
         self._closing = False
         self._logged_in = False
         self._read_task: asyncio.Task[None] | None = None
-        self._keepalive_task: asyncio.Task[None] | None = None
+        self._probe_task: asyncio.Task[None] | None = None
         self._reconnect_task: asyncio.Task[None] | None = None
         self._schedule_replies: set[str] = set()
 
@@ -289,13 +296,13 @@ class RA2Driver(LutronDriver):
             raise DriverError(f"Could not parse RA2 integration report XML: {exc}") from exc
         self._db_xml = text
         await self._open()
-        if self._keepalive_task is None or self._keepalive_task.done():
-            self._keepalive_task = asyncio.create_task(self._keepalive_loop())
+        if self._probe_task is None or self._probe_task.done():
+            self._probe_task = asyncio.create_task(self._probe_loop())
 
     async def close(self) -> None:
         self._closing = True
-        tasks = [t for t in (self._keepalive_task, self._reconnect_task, self._read_task) if t]
-        self._keepalive_task = self._reconnect_task = self._read_task = None
+        tasks = [t for t in (self._probe_task, self._reconnect_task, self._read_task) if t]
+        self._probe_task = self._reconnect_task = self._read_task = None
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -383,6 +390,7 @@ class RA2Driver(LutronDriver):
             self._logged_in = False
             self._writer = self._reader = None
             self._output_sent_at.clear()  # the replies will never come
+            self._probes_sent.clear()
             self.metrics.mark_disconnected()
         if writer is not None:
             writer.close()
@@ -435,16 +443,19 @@ class RA2Driver(LutronDriver):
                 log.warning("RA2 reconnect failed (%s); retrying in %.0fs", exc, delay)
                 delay = min(delay * 2, self.reconnect_max_delay)
 
-    async def _keepalive_loop(self) -> None:
-        # Some network gear drops idle TCP sessions; a cheap query keeps it alive
-        # and surfaces a dead socket quickly (the write fails -> reconnect).
+    async def _probe_loop(self) -> None:
+        # Every few seconds ask the repeater for its clock (a cheap query that always
+        # gets a reply) and time the answer: that round trip, which includes any queue
+        # of commands ahead of it, is the latency the GUI graphs. It doubles as the
+        # keepalive: some network gear drops idle TCP sessions, and a dead socket
+        # surfaces here quickly (the write fails -> reconnect).
         while not self._closing:
-            await asyncio.sleep(self.keepalive_interval)
+            await asyncio.sleep(self.probe_interval)
             if self.connected:
                 try:
-                    await self._send("?SYSTEM,1")
+                    await self._send(PROBE_COMMAND)
                 except Exception as exc:
-                    log.warning("RA2 keepalive failed: %s", exc)
+                    log.warning("RA2 latency probe failed: %s", exc)
                     if self._writer is not None:
                         self._writer.close()  # read loop sees EOF and reconnects
 
@@ -460,12 +471,12 @@ class RA2Driver(LutronDriver):
             except ValueError:
                 return
             sent_at = self._output_sent_at.pop(parts[1], None)
-            if sent_at is not None:
-                ms = (time.monotonic() - sent_at) * 1000
-                self.metrics.echo.add(ms)
-                if log.isEnabledFor(logging.DEBUG):
-                    log.debug("RA2 zone %s echoed %.0f ms after the command", parts[1], ms)
+            if sent_at is not None and log.isEnabledFor(logging.DEBUG):
+                log.debug("RA2 zone %s echoed %.0f ms after the command", parts[1], (time.monotonic() - sent_at) * 1000)
             await self._notify(parts[1], level)
+        elif cmd == "~SYSTEM" and len(parts) >= 2 and parts[1] == "1":
+            if self._probes_sent:
+                self.metrics.latency.add((time.monotonic() - self._probes_sent.popleft()) * 1000)
         elif cmd == "~TIMECLOCK" and len(parts) >= 5 and parts[2] == "6":
             sid = f"{parts[1]}:{parts[3]}"
             self._schedule_replies.add(sid)
@@ -491,6 +502,11 @@ class RA2Driver(LutronDriver):
                 if c.startswith("#OUTPUT,"):
                     self._output_sent_at[c.split(",", 2)[1]] = now
                     self.metrics.commands.add(1, now)
+                elif c == PROBE_COMMAND:
+                    # a reply lost to a dropped line must not pair every later probe with the wrong send
+                    while self._probes_sent and now - self._probes_sent[0] > self.inflight_expiry:
+                        self._probes_sent.popleft()
+                    self._probes_sent.append(now)
                 writer.write(c.encode("ascii", errors="replace") + b"\r\n")
             try:
                 await writer.drain()

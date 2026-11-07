@@ -47,7 +47,7 @@ class LutronDriver(abc.ABC):
         return 0
 
     def link_status(self) -> dict:
-        """Counters for the GUI's status area: rates, echo latency, reconnects."""
+        """Counters for the GUI's status area: rates, round-trip latency, reconnects."""
         return self.metrics.snapshot(self.inflight())
 
     # -- inventory -------------------------------------------------------
