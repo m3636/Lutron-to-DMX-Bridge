@@ -1510,6 +1510,111 @@
     } catch (e) { toast(e.message, true); }
   }
 
+  // ---------------------------------------------------------------- export / import of settings
+  const xfer = { doc: null, preview: null, fileName: "" };
+
+  function updateExportLink() {
+    const creds = $("#xfer-creds").checked;
+    $("#btn-export").setAttribute("href", "api/config/export" + (creds ? "?credentials=true" : ""));
+    $("#xfer-creds-warn").classList.toggle("hidden", !creds);
+  }
+
+  function closeImportPanel() {
+    xfer.doc = xfer.preview = null;
+    const p = $("#import-panel");
+    clear(p);
+    p.classList.add("hidden");
+  }
+
+  function showImportMessage(kind, title, lines) {
+    const p = $("#import-panel");
+    clear(p);
+    p.classList.remove("hidden");
+    p.appendChild(h("div", { class: "xfer-note " + kind, role: kind === "bad" ? "alert" : "status" },
+      h("b", { text: title }), ...lines.map((l) => h("div", { text: l }))));
+    p.appendChild(h("div", { class: "toolbar" }, h("button", { class: "btn", onclick: closeImportPanel, text: "Close" })));
+  }
+
+  async function pickImportFile(ev) {
+    const file = ev.target.files && ev.target.files[0];
+    ev.target.value = ""; // so choosing the same file again works
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) { showImportMessage("bad", "That file is too big to be a settings export.", []); return; }
+    let doc;
+    try { doc = JSON.parse(await file.text()); }
+    catch (e) { showImportMessage("bad", "Cannot read " + file.name, ["It is not valid JSON."]); return; }
+    try {
+      xfer.preview = await api("POST", "config/import/preview", { document: doc });
+      xfer.doc = doc;
+      xfer.fileName = file.name;
+      renderImportPanel();
+    } catch (e) { showImportMessage("bad", "Cannot import " + file.name, [e.message]); }
+  }
+
+  function renderImportPanel() {
+    const pv = xfer.preview, f = pv.file;
+    const p = $("#import-panel");
+    clear(p);
+    p.classList.remove("hidden");
+    const when = f.created ? " on " + new Date(f.created).toLocaleString() : "";
+    p.appendChild(h("h4", { text: "Import " + xfer.fileName }));
+    p.appendChild(h("p", { class: "hint", text:
+      "Made by app version " + (f.app_version || "unknown") + when + ". Integration login, update token and pairing certificates: " +
+      (f.includes_credentials ? "included in the file." : "not in the file (the ones this app has now are kept).") }));
+    pv.warnings.filter((w) => !w.section).forEach((w) => p.appendChild(h("div", { class: "xfer-note warn", text: w.text })));
+
+    const boxes = [];
+    const importBtn = h("button", { class: "btn primary", text: "Import selected" });
+    const refresh = () => {
+      boxes.forEach(({ box, row }) => row.classList.toggle("off", !box.checked));
+      importBtn.disabled = !boxes.some(({ box }) => box.checked);
+    };
+    pv.sections.forEach((s) => {
+      const box = h("input", { type: "checkbox", dataset: { section: s.id }, checked: pv.selected.includes(s.id) && !s.blocked, disabled: !!s.blocked, onchange: refresh });
+      const row = h("div", { class: "import-sec" },
+        h("label", { class: "check" }, box, h("b", { text: s.label }), h("span", { class: "muted", text: s.changed ? "" : "no changes" })));
+      const items = [...s.changes.map((c) => h("li", { text: c })),
+        ...pv.warnings.filter((w) => w.section === s.id).map((w) => h("li", { class: "warn", text: w.text }))];
+      if (items.length) row.appendChild(h("ul", null, ...items));
+      if (s.blocked) row.appendChild(h("div", { class: "blocked", text: s.blocked }));
+      boxes.push({ box, row });
+      p.appendChild(row);
+    });
+
+    let restoreBox = null;
+    if (pv.can_restore_active_set) {
+      restoreBox = h("input", { type: "checkbox", id: "import-restore-active" });
+      p.appendChild(h("div", { class: "import-sec" }, h("label", { class: "check" }, restoreBox,
+        h("span", { text: "Also bring back the saved schedule states of “" + f.active_set + "”, which was active when the file was made" }))));
+    }
+    p.appendChild(h("p", { class: "hint", text:
+      "Each ticked section is replaced as a whole: anything in it that is not in the file is removed. The current settings are saved to the app’s backups folder first, and that file can be imported to undo this. Changing the Lutron connection reconnects the app." }));
+    importBtn.addEventListener("click", () => runImport(importBtn, restoreBox));
+    p.appendChild(h("div", { class: "toolbar" }, importBtn, h("button", { class: "btn ghost", onclick: closeImportPanel, text: "Cancel" })));
+    refresh();
+  }
+
+  async function runImport(btn, restoreBox) {
+    const sections = $$("#import-panel input[data-section]").filter((i) => i.checked).map((i) => i.dataset.section);
+    if (!sections.length) return;
+    btn.disabled = true;
+    try {
+      const res = await api("POST", "config/import", {
+        document: xfer.doc, sections, restore_active_set: !!(restoreBox && restoreBox.checked), confirm: true });
+      const names = new Map(xfer.preview.sections.map((s) => [s.id, s.label]));
+      const lines = ["Imported: " + res.applied.map((s) => names.get(s) || s).join(", ") + ".",
+        "The previous settings were saved to " + res.backup + " (import that file to undo this).", ...res.warnings];
+      if (res.restart_required) lines.push("The web address or port changes the next time the app starts.");
+      showImportMessage("ok", "Settings imported", lines);
+      xfer.doc = xfer.preview = null;
+      state.dmx = null; // the DMX tab re-reads its settings
+      loadDriverSettings(); loadUpdateSettings(); renderUpdateFacts(); loadInventory(); loadDmxMapped(); loadStatus();
+    } catch (e) {
+      btn.disabled = false;
+      toast(e.message, true);
+    }
+  }
+
   async function checkUpdateNow() {
     const btn = $("#btn-update-check"), st = $("#update-check-state");
     btn.disabled = true; st.textContent = "Asking GitHub…";
@@ -1596,6 +1701,8 @@
     $("#btn-update-dismiss").addEventListener("click", dismissUpdate);
     $("#btn-update-check").addEventListener("click", checkUpdateNow);
     $("#btn-upd-save").addEventListener("click", saveUpdateSettings);
+    $("#xfer-creds").addEventListener("change", updateExportLink);
+    $("#import-file").addEventListener("change", pickImportFile);
     $("#upd-token").addEventListener("focus", (e) => { if (e.target.value === "********") e.target.select(); });
     $("#btn-pair").addEventListener("click", () => pairLeap());
     $("#btn-discover").addEventListener("click", discoverControllers);

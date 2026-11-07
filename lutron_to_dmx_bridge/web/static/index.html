@@ -303,6 +303,24 @@
         </div>
       </div>
 
+      <div class="card" id="transfer-card">
+        <h3>Export &amp; import settings</h3>
+        <p class="hint">Saves everything this app needs to be rebuilt into one file: the Lutron connection, the DMX mapping and input settings, custom scenes, schedule sets (such as Performance mode) and the update preference. Use it to move to another computer or to recover after the settings were lost. (The <b>Backup</b> below is different: it saves what the Lutron system itself knows.)</p>
+        <div class="form-grid">
+          <label class="check wide"><input type="checkbox" id="xfer-creds"> Include the Lutron integration login, update token and pairing certificates</label>
+        </div>
+        <div class="xfer-note warn hidden" id="xfer-creds-warn" role="alert">
+          <b>Sensitive file.</b> With this box ticked the file contains the integration login (user name and password), the GitHub token and any LEAP pairing keys <b>in plain text</b>. Anyone who gets the file can control your lights over the network. Keep it somewhere private, do not email or post it, and delete it when you no longer need it. Leave the box unticked and the current logins stay in place when you import the file again.
+        </div>
+        <div class="toolbar wrap">
+          <a class="btn primary" id="btn-export" href="api/config/export" download>Download settings file</a>
+          <div class="spacer"></div>
+          <label class="btn" for="import-file">Import from file…</label>
+          <input type="file" id="import-file" accept=".json,application/json" class="hidden">
+        </div>
+        <div class="import-panel hidden" id="import-panel" aria-live="polite"></div>
+      </div>
+
       <div class="card">
         <h3>Backup</h3>
         <p class="hint">Downloads everything the app can read from the Lutron system (zones, areas, keypads, schedules, levels) plus this app's scenes and DMX settings, as JSON. A copy is also kept in the app's data folder under <code>backups/</code>.</p>

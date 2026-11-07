@@ -5,6 +5,8 @@
     lutron-to-dmx-bridge pair [HOST]     pair with an RA3 / RA2 Select / Caseta processor (press its button);
                                HOST is found automatically when left out
     lutron-to-dmx-bridge backup [FILE]   save a JSON snapshot of the Lutron system
+    lutron-to-dmx-bridge export-config [FILE]   save this app's settings (mapping, scenes, schedule sets...) to a file
+    lutron-to-dmx-bridge import-config FILE     restore settings from such a file (stop the app first)
     lutron-to-dmx-bridge info            print where config and backups live
 """
 
@@ -148,6 +150,84 @@ def _backup(args: argparse.Namespace) -> None:
     print(f"Backup written to {path}")
 
 
+def _export_config(args: argparse.Namespace) -> None:
+    from . import config_transfer as ct
+
+    config = AppConfig.load()
+    doc = ct.build_export(config, include_credentials=args.include_credentials)
+    path = Path(args.file) if args.file else data_dir() / "backups" / ct.export_filename()
+    ct.write_private(path, json.dumps(doc, indent=2))
+    print(f"Settings written to {path}")
+    if args.include_credentials:
+        print("WARNING: this file contains the Lutron integration login, the update token and any LEAP pairing\n"
+              "certificates in plain text. Keep it private and delete it when you no longer need it.")
+    else:
+        print("The integration login, update token and pairing certificates are not in the file "
+              "(add --include-credentials to include them).")
+
+
+def _app_is_running(config: AppConfig) -> bool:
+    import socket
+
+    host = "127.0.0.1" if config.web_host in ("0.0.0.0", "::", "") else config.web_host
+    try:
+        with socket.create_connection((host, config.web_port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+def _import_config(args: argparse.Namespace) -> None:
+    from . import config_transfer as ct
+
+    try:
+        raw = json.loads(Path(args.file).read_text(encoding="utf-8-sig"))
+    except OSError as exc:
+        raise SystemExit(f"Cannot read {args.file}: {exc}")
+    except ValueError as exc:
+        raise SystemExit(f"{args.file} is not valid JSON: {exc}")
+    config = AppConfig.load()
+    try:
+        parsed = ct.parse_document(raw)
+        wanted = [s.strip() for s in args.sections.split(",") if s.strip()] if args.sections else None
+        sections = ct.select_sections(parsed, wanted)
+    except ct.ConfigImportError as exc:
+        raise SystemExit(f"Cannot import {args.file}: {exc}")
+    info = parsed.info()
+    print(f"File: {args.file}")
+    print(f"  made by app version {info['app_version'] or 'unknown'}"
+          f"{' on ' + info['created'] if info['created'] else ''}, config format {info['schema_version']}")
+    print(f"  integration login / tokens / certificates: {'included' if info['includes_credentials'] else 'not included'}")
+    print()
+    for p in ct.describe_changes(config, parsed, sections):
+        print(f"{p.label}:" + ("" if p.changed else " no changes"))
+        for line in p.changes:
+            print(f"  - {line}")
+        if p.blocked:
+            raise SystemExit(f"Cannot import {p.label}: {p.blocked}")
+    skipped = [ct.SECTIONS[s] for s in parsed.sections if s not in sections]
+    if skipped:
+        print(f"\nNot imported (not selected): {', '.join(skipped)}")
+    for _, text in ct.import_warnings(config, parsed, sections):
+        print(f"\nNote: {text}")
+    if _app_is_running(config) and not args.force:
+        raise SystemExit(f"\nThe app seems to be running (port {config.web_port} answers). It keeps its own copy of "
+                         "the settings and would overwrite the import. Stop it first, or import from Settings in "
+                         "the web GUI. (--force skips this check.)")
+    if not args.yes:
+        if not sys.stdin.isatty():
+            raise SystemExit("\nNothing was changed. Run again with --yes to import without a prompt.")
+        if input("\nReplace these settings now? A backup of the current ones is saved first. [y/N] "
+                 ).strip().lower() not in ("y", "yes"):
+            raise SystemExit("Nothing was changed.")
+    result = ct.import_into_config(config, parsed, sections, args.restore_active_set)
+    print(f"\nImported: {', '.join(ct.SECTIONS[s] for s in result.applied)}")
+    print(f"Previous settings saved to {result.backup} (import that file to undo).")
+    for w in result.warnings:
+        print(f"Note: {w}")
+    print("Start the app to use them.")
+
+
 def _info(_: argparse.Namespace) -> None:
     print(f"Lutron To DMX Bridge {__version__}")
     print(f"Config:  {AppConfig.path()}")
@@ -173,12 +253,26 @@ def main(argv: list[str] | None = None) -> None:
     d.add_argument("--scan", action="store_true", help="also scan the subnet even if mDNS found something")
     b = sub.add_parser("backup", help="save a JSON snapshot of the Lutron system")
     b.add_argument("file", nargs="?")
+    e = sub.add_parser("export-config", help="save this app's settings to a file")
+    e.add_argument("file", nargs="?", help="where to write it (default: the backups folder)")
+    e.add_argument("--include-credentials", action="store_true",
+                   help="also include the integration login, update token and pairing certificates "
+                        "(sensitive: anyone with the file can use them)")
+    i = sub.add_parser("import-config", help="restore settings from an export file (stop the app first)")
+    i.add_argument("file")
+    i.add_argument("--sections", help="comma-separated: driver, dmx, scenes, schedule_sets, updates, web "
+                                      "(default: all of them except web)")
+    i.add_argument("--restore-active-set", action="store_true",
+                   help="also restore the saved prior schedule states of a set that was active at export")
+    i.add_argument("-y", "--yes", action="store_true", help="don't ask for confirmation")
+    i.add_argument("--force", action="store_true", help="import even if the app seems to be running")
     sub.add_parser("info", help="show config and backup locations")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    handlers = {"pair": _pair, "discover": _discover, "backup": _backup, "info": _info}
+    handlers = {"pair": _pair, "discover": _discover, "backup": _backup, "info": _info,
+                "export-config": _export_config, "import-config": _import_config}
     try:
         handlers.get(args.cmd, _run_server)(args)
     except KeyboardInterrupt:
