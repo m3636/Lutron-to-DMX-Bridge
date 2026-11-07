@@ -39,13 +39,13 @@
   };
 
   let toastTimer = null;
-  function toast(msg, bad) {
+  function toast(msg, bad, ms) {
     const t = $("#toast");
     t.textContent = msg;
     t.classList.toggle("bad", !!bad);
     t.classList.remove("hidden");
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => t.classList.add("hidden"), bad ? 6000 : 2500);
+    toastTimer = setTimeout(() => t.classList.add("hidden"), ms || (bad ? 6000 : 2500));
   }
 
   async function api(method, path, body) {
@@ -176,6 +176,7 @@
     const rate = Math.round(L.commands_per_s || 0);
     const budget = D.enabled ? Number(D.max_commands_per_s) || 0 : 0;
     const held = D.held_back || 0;
+    const Q = st.queue || {}, waiting = Q.waiting || 0;
     const reconnecting = !st.connected && (L.reconnect_attempts || 0) > 0;
     const m = { chips: {}, sections: [], alerts: A, app, srv };
 
@@ -244,6 +245,7 @@
       m.sections.push({ id: "out", title: "Output to Lutron", cls, rows: [
         ["Commands/s", rate + (budget ? " of " + budget + " allowed" : ""), held > 0 ? "warn" : ""],
         ["Held back by the limit", held ? plural(held, "light") : "none", held ? "warn" : ""],
+        ["Waiting in the app", waiting ? plural(waiting, "update") : "none", waiting ? "warn" : ""],
         ["Sent since start", Number(L.commands_total || 0).toLocaleString()],
       ] });
     }
@@ -458,6 +460,28 @@
     $("#status-log-empty").classList.toggle("hidden", (A.recent || []).length > 0);
     $("#status-log-dot").className = "dot " + (A.errors ? "bad" : A.warnings ? "warn" : "ok");
     $("#btn-alerts-clear").disabled = !(A.errors || A.warnings);
+    const waiting = (st.queue || {}).waiting || 0;
+    $("#btn-queue-clear").textContent = waiting ? "Clear Lutron queue (" + waiting + ")" : "Clear Lutron queue";
+    $("#btn-queue-clear").disabled = !st.connected;
+  }
+
+  /** Say what a clear did and, as important, what it could not undo. */
+  function queueClearMessage(r) {
+    const parts = [r.dropped ? "Dropped " + plural(r.dropped, "waiting update") + "." : "Nothing was waiting in the app."];
+    if (r.inflight) parts.push(plural(r.inflight, "command") + " already sent to the repeater can't be recalled.");
+    if (r.fading) parts.push(plural(r.fading, "light") + " will finish the fade already started.");
+    return parts.join(" ");
+  }
+
+  async function clearQueue() {
+    const btn = $("#btn-queue-clear");
+    btn.disabled = true;
+    try {
+      const r = await api("POST", "queue/clear");
+      toast(queueClearMessage(r), false, 7000);
+      if (r.status) renderStatus(r.status); else await loadStatus();
+    } catch (e) { toast(e.message, true); }
+    finally { btn.disabled = !(state.status && state.status.connected); }
   }
 
   async function clearAlerts() {
@@ -1668,6 +1692,7 @@
 
     $$("#status-chips .chip").forEach((c) => c.addEventListener("click", togglePop));
     $("#btn-alerts-clear").addEventListener("click", clearAlerts);
+    $("#btn-queue-clear").addEventListener("click", clearQueue);
     document.addEventListener("click", (e) => { if (state.pop && !e.target.closest("#status-pop, #status-chips")) closePop(); });
     document.addEventListener("keydown", (e) => { if (e.key === "Escape") closePop(true); });
     trackTopbarHeight();

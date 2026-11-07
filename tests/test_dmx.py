@@ -674,3 +674,64 @@ async def test_engine_reports_held_back_zones_and_command_rate():
     assert eng.held_back == 0
     assert eng.commands.total == eng.commands_sent
     assert "commands_per_s" in eng.status()
+
+
+# ---------------------------------------------------------------------------
+# Clearing the queue
+# ---------------------------------------------------------------------------
+async def test_clear_pending_drops_held_back_zones_until_the_source_moves():
+    n = 40
+    zones = [str(i) for i in range(n)]
+    eng, drv = make_engine(auto_assign(zones), rate=5.0, zones=zones)
+    eng.config.max_commands_per_s = 10.0
+    eng._init_zone_states()
+    eng.process_frame(ramp_frame(n, 255), 0.0)
+    assert await eng.flush(0.0) == n
+    eng.process_frame(ramp_frame(n, 0), 0.5)
+    sent = await eng.flush(0.5)
+    assert sent < n and eng.pending() == n - sent == eng.held_back
+    assert eng.status()["pending"] == n - sent
+
+    drv.calls.clear()
+    result = eng.clear_pending(0.5)
+    assert result["dropped"] == n - sent
+    assert eng.pending() == 0 and eng.held_back == 0
+
+    # The console keeps sending the same frame: nothing is sent, however long we wait.
+    for k in range(1, 100):
+        eng.process_frame(ramp_frame(n, 0), 0.5 + k * 0.05)
+        assert await eng.flush(0.5 + k * 0.05) == 0
+    assert drv.calls == [] and eng.pending() == 0
+
+    # The next change from the source is sent as usual, and so is the one after it. The lights
+    # whose cleared update never went out are still at 100 %, so only the others have to move.
+    eng.process_frame(ramp_frame(n, 255), 10.0)
+    assert eng.pending() == sent
+    assert await eng.flush(10.0) > 0
+    drv.calls.clear()
+    eng.process_frame(ramp_frame(n, 0), 20.0)
+    assert await eng.flush(20.0) > 0
+
+
+async def test_cleared_value_is_sent_again_after_the_source_moves_away_and_back():
+    eng, drv = make_engine(auto_assign(["a"]), rate=5.0, zones=["a"])
+    eng._init_zone_states()
+    eng.process_frame(frame(c1=255), 0.0)
+    eng.config.max_commands_per_s = 1.0
+    eng._zones["a"].last_send = 0.0  # inside the per-zone interval: it waits
+    assert eng.pending() == 1
+    assert eng.clear_pending(0.0)["dropped"] == 1
+    eng.process_frame(frame(c1=128), 1.0)  # the source moves on...
+    eng.process_frame(frame(c1=255), 2.0)  # ...and returns to the cleared value
+    assert eng.pending() == 1
+    assert await eng.flush(5.0) == 1
+    assert drv.calls[-1][1] == {"a": 100.0}
+
+
+async def test_clear_pending_reports_lights_still_fading_on_the_repeater():
+    eng, drv = make_engine(auto_assign(["a", "b"], ["intensity", "fade"]))
+    eng._init_zone_states()
+    eng.process_frame(frame(c1=255, c2=20, c3=255, c4=20), 1.0)  # 2 s fade channel
+    assert await eng.flush(1.0) == 2
+    assert eng.clear_pending(1.5) == {"dropped": 0, "fading": 2}
+    assert eng.clear_pending(4.0) == {"dropped": 0, "fading": 0}  # the fades are over

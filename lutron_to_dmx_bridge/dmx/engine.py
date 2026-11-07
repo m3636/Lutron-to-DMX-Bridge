@@ -178,6 +178,9 @@ class _ZoneState:
     plan_x0: float = 0.0
     plan_x1: float | None = None
     plan_fade: float = 0.0
+    # The DMX value the user cleared from the queue: it is not sent until the
+    # source changes it (see DmxEngine.clear_pending).
+    dismissed: float | None = None
 
     def light_at(self, now: float) -> float | None:
         """Where our last command should have the light at `now`."""
@@ -324,6 +327,8 @@ class DmxEngine:
             st = self._zones.get(zone_id)
             if st is None:  # mapping added at runtime
                 st = self._zones[zone_id] = _ZoneState(sent=None)
+            if st.dismissed is not None and abs(level - st.dismissed) >= 1e-6:
+                st.dismissed = None  # the source moved on: its new value counts again
             if st.target != level:
                 if (st.target is not None and abs(level - st.target) <= RAMP_STEP
                         and now - st.target_changed_at <= RAMP_GAP):
@@ -336,12 +341,49 @@ class DmxEngine:
                 st.target_changed_at = now
             st.fade = fade
 
+    # -- clearing the queue ----------------------------------------------
+    @staticmethod
+    def _dismissed(st: _ZoneState) -> bool:
+        return (st.dismissed is not None and st.target is not None
+                and abs(st.target - st.dismissed) < 1e-6)
+
+    def _is_pending(self, st: _ZoneState) -> bool:
+        """True if the zone's DMX value has not reached the Lutron system yet."""
+        if st.target is None or self._dismissed(st):
+            return False
+        return st.sent is None or abs(st.target - st.sent) >= 1e-6
+
+    def pending(self) -> int:
+        """Mapped lights whose latest DMX value is still waiting to be sent: held back by
+        the rate limits, or not yet past the small-move hold."""
+        return sum(1 for st in self._zones.values() if self._is_pending(st))
+
+    def clear_pending(self, now: float | None = None) -> dict:
+        """Forget every DMX value that is waiting to be sent.
+
+        Each pending light keeps the level it has; its current DMX value is ignored until
+        the source changes it, so a console that keeps sending the same frame does not
+        refill the queue. Commands already written to the repeater are not touched.
+        Returns the lights dropped and the lights whose last command is still fading
+        on the repeater (a fade cannot be recalled).
+        """
+        now = self._clock() if now is None else now
+        dropped = fading = 0
+        for st in self._zones.values():
+            if self._is_pending(st):
+                st.dismissed = st.target
+                dropped += 1
+            if st.plan_fade > 0 and now < st.plan_t0 + st.plan_fade:
+                fading += 1
+        self.held_back = 0
+        return {"dropped": dropped, "fading": fading}
+
     # -- sending ---------------------------------------------------------
     def _due(self, now: float) -> dict[str, tuple[float, float | None]]:
         interval = self._min_interval()
         due: dict[str, tuple[float, float | None]] = {}
         for zone_id, st in self._zones.items():
-            if st.target is None:
+            if st.target is None or self._dismissed(st):
                 continue
             if st.sent is not None:
                 if abs(st.target - st.sent) < 1e-6:
@@ -467,6 +509,7 @@ class DmxEngine:
                 st.plan_t0, st.plan_x1, st.plan_fade = now, level, fade or 0.0
                 st.sent = level
                 st.sent_target = due[zone_id][0]
+                st.dismissed = None
                 st.last_send = now
             self.commands_sent += len(levels)
             self.commands.add(len(levels), now)
@@ -514,6 +557,7 @@ class DmxEngine:
             "commands_sent": self.commands_sent,
             "commands_per_s": self.commands.rate(self._clock()),
             "held_back": self.held_back,
+            "pending": self.pending(),
             "max_rate_hz": cfg.max_rate_hz,
             "max_commands_per_s": cfg.max_commands_per_s,
             "mapped_zones": len(self._zones),
