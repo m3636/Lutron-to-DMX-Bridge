@@ -24,6 +24,7 @@
       <button type="button" class="chip" id="chip-out" aria-haspopup="dialog" aria-expanded="false" title="Commands sent to the Lutron system"><i class="dot"></i><span class="k">Output</span><span class="v">-</span><span class="meter"><i></i></span><span class="held hidden"></span></button>
       <button type="button" class="chip" id="chip-alerts" aria-haspopup="dialog" aria-expanded="false" title="Warnings and errors since start"><i class="dot"></i><span class="k">Alerts</span><span class="v">-</span></button>
       <button type="button" class="chip" id="chip-server" aria-haspopup="dialog" aria-expanded="false" title="Connection between this browser and the app"><i class="dot"></i><span class="k">Server</span><span class="v">-</span></button>
+      <button type="button" class="btn danger hidden" id="btn-dmx-pause" title="Stop all DMX-driven commands to the Lutron system until you resume">Pause DMX</button>
     </div>
   </header>
 
@@ -39,6 +40,10 @@
   <div class="status-pop hidden" id="status-pop" role="dialog" aria-label="System status"></div>
 
   <div class="banner hidden" id="error-banner" role="alert"></div>
+  <div class="set-banner hidden" id="protect-banner" role="alert">
+    <span class="set-banner-text" id="protect-banner-text"></span>
+    <button class="btn primary" id="btn-protect-resume">Resume DMX</button>
+  </div>
   <div class="set-banner hidden" id="set-banner" role="status">
     <span class="set-banner-text" id="set-banner-text"></span>
     <button class="btn ghost" id="btn-set-details">Details</button>
@@ -164,7 +169,11 @@
           <label>Max updates / second / zone <input type="number" id="dmx-rate" min="0.5" max="50" step="0.5"></label>
           <label>Max updates / second, all zones (0 = no limit) <input type="number" id="dmx-total-rate" min="0" max="1000" step="1"></label>
           <label title="A light is only sent a new level when the DMX value moved at least this many percent. Above 0.5 the level sent is also rounded to a multiple of it (0 and 100 stay exact). Bigger steps mean fewer commands to the Lutron system and a rougher fade.">Level step, % (0.5 = exact) <input type="number" id="dmx-resolution" min="0.1" max="25" step="0.1"></label>
+          <label class="check"><input type="checkbox" id="dmx-protect"> Protect the repeater</label>
+          <label class="prot-only">Slow down above this Lutron latency, ms <input type="number" id="dmx-latency-limit" min="50" max="10000" step="50"></label>
+          <label class="prot-only">Max commands in flight (0 = no cap) <input type="number" id="dmx-max-inflight" min="0" max="500" step="1"></label>
         </div>
+        <p class="hint">Protect the repeater: the limit above is a ceiling. The app times a round trip to the Lutron system and slows down while it is behind, holds back what it sends while it is seconds behind, and pauses DMX output (with an alert) if the input floods or the repeater does not recover. The repeater keeps working through commands it has already accepted, so this is what keeps that backlog from forming.</p>
         <p class="hint usb-only" id="serial-note"></p>
         <p class="hint hidden" id="dmx-warnings" role="status"></p>
       </div>
@@ -214,6 +223,7 @@
       <div class="toolbar">
         <h2>Status</h2>
         <div class="spacer"></div>
+        <button class="btn ghost" id="btn-queue-clear" title="Drop the level commands this app is still holding back from the Lutron system">Clear Lutron queue</button>
         <button class="btn ghost" id="btn-alerts-clear">Clear alerts</button>
       </div>
       <div class="status-grid" id="status-sections"></div>
@@ -302,6 +312,24 @@
           <div class="spacer"></div>
           <button class="btn primary" id="btn-upd-save">Save</button>
         </div>
+      </div>
+
+      <div class="card" id="transfer-card">
+        <h3>Export &amp; import settings</h3>
+        <p class="hint">Saves everything this app needs to be rebuilt into one file: the Lutron connection, the DMX mapping and input settings, custom scenes, schedule sets (such as Performance mode) and the update preference. Use it to move to another computer or to recover after the settings were lost. (The <b>Backup</b> below is different: it saves what the Lutron system itself knows.)</p>
+        <div class="form-grid">
+          <label class="check wide"><input type="checkbox" id="xfer-creds"> Include the Lutron integration login, update token and pairing certificates</label>
+        </div>
+        <div class="xfer-note warn hidden" id="xfer-creds-warn" role="alert">
+          <b>Sensitive file.</b> With this box ticked the file contains the integration login (user name and password), the GitHub token and any LEAP pairing keys <b>in plain text</b>. Anyone who gets the file can control your lights over the network. Keep it somewhere private, do not email or post it, and delete it when you no longer need it. Leave the box unticked and the current logins stay in place when you import the file again.
+        </div>
+        <div class="toolbar wrap">
+          <a class="btn primary" id="btn-export" href="api/config/export" download>Download settings file</a>
+          <div class="spacer"></div>
+          <label class="btn" for="import-file">Import from file…</label>
+          <input type="file" id="import-file" accept=".json,application/json" class="hidden">
+        </div>
+        <div class="import-panel hidden" id="import-panel" aria-live="polite"></div>
       </div>
 
       <div class="card">

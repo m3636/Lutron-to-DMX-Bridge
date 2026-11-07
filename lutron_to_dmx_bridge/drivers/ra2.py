@@ -31,20 +31,40 @@ over telnet; the Main Repeater serves it as XML at ``http://<host>/DbXmlInfo.xml
 from __future__ import annotations
 
 import asyncio
+import http.client
 import logging
+import os
 import re
+import socket
+import struct
+import threading
 import time
-import urllib.request
 import xml.etree.ElementTree as ET
+from collections import deque
 from pathlib import Path
 from typing import Any
 
+from ..metrics import LOAD_STALE_S, LinkLoad
 from ..models import Area, Keypad, Schedule, SystemInventory, Zone, ZoneType
 from .base import DriverError, LutronDriver
 
 log = logging.getLogger(__name__)
 
 DEFAULT_PORT = 23
+#: cheap query the repeater always answers (~SYSTEM,1,<time>); its round trip is the latency graph
+PROBE_COMMAND = "?SYSTEM,1"
+HTTP_PORT = 80
+#: The repeater's little web server is slow: on the install this was tuned on a download takes
+#: about 50 s, trickling bytes, and it ignores a second request made while it is busy with the
+#: first.  So wait generously for each read, give up on the whole download only after
+#: DOWNLOAD_TOTAL_TIMEOUT, retry, and never run two downloads at once.
+DOWNLOAD_CONNECT_TIMEOUT = 10.0
+DOWNLOAD_READ_TIMEOUT = 45.0
+DOWNLOAD_TOTAL_TIMEOUT = 120.0
+DOWNLOAD_ATTEMPTS = 3
+DOWNLOAD_PAUSE = (2.0, 5.0)
+#: with a cached copy on disk, wait this long for the download before starting from the copy
+CACHE_GRACE = 15.0
 PROMPT = b"GNET> "
 LOGIN_PROMPT = b"login: "
 PASSWORD_PROMPT = b"password: "
@@ -244,6 +264,13 @@ class RA2Driver(LutronDriver):
     #: a command with no echo after this long stops counting as in flight (a command
     #: that changes nothing may never be echoed)
     inflight_expiry = 5.0
+    #: a ?SYSTEM,1 probe with no reply after this long is forgotten. Long, because a repeater that
+    #: is minutes behind still answers in order and the replies must pair with the right send.
+    probe_expiry = 60.0
+    #: most probes waiting for a reply at once: the oldest one's age already says how far behind it is
+    max_probes_waiting = 8
+    #: the in-flight count the DMX engine's window uses forgets commands older than this
+    window_expiry = 2.0
     #: how long refresh_schedules waits for the repeater's ~TIMECLOCK replies
     schedule_query_timeout = 3.0
 
@@ -251,13 +278,33 @@ class RA2Driver(LutronDriver):
         self,
         config: Any,
         *,
-        keepalive_interval: float = 60.0,
+        probe_interval: float = 2.0,
+        probe_fast: float = 0.5,
         connect_timeout: float = 10.0,
         reconnect_max_delay: float = 30.0,
+        http_port: int = HTTP_PORT,
+        cache_dir: Path | None = None,
+        read_timeout: float = DOWNLOAD_READ_TIMEOUT,
+        download_attempts: int = DOWNLOAD_ATTEMPTS,
+        download_pause: tuple[float, ...] = DOWNLOAD_PAUSE,
+        cache_grace: float = CACHE_GRACE,
     ) -> None:
         super().__init__()
         self.config = config
-        self.keepalive_interval = keepalive_interval
+        self.probe_interval = probe_interval
+        #: probe spacing while commands are flowing or replies are outstanding
+        self.probe_fast = probe_fast
+        self.http_port = http_port
+        self._cache_dir = cache_dir
+        self.read_timeout = read_timeout
+        self.download_attempts = download_attempts
+        self.download_pause = download_pause
+        #: how long to wait for the download before starting from the cached copy, if there is one
+        self.cache_grace = cache_grace
+        #: "download", "cache" (the repeater was slow or unreachable) or "file"
+        self.inventory_source = ""
+        self._download_task: asyncio.Task[bytes] | None = None
+        self._cancel_download = threading.Event()
         self.connect_timeout = connect_timeout
         self.reconnect_max_delay = reconnect_max_delay
 
@@ -266,12 +313,19 @@ class RA2Driver(LutronDriver):
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._lock = asyncio.Lock()
+        #: _send() calls waiting for the lock, and the level commands of the one writing now
+        self._waiters: set[_Waiter] = set()
+        self._writing = 0
         #: zone id -> monotonic time of the last #OUTPUT we sent, to log how long the echo takes
+        #: and to count commands in flight
         self._output_sent_at: dict[str, float] = {}
+        #: monotonic send times of the ?SYSTEM,1 probes still waiting for their ~SYSTEM reply
+        #: (the repeater answers in order, so replies pair with probes first-in first-out)
+        self._probes_sent: deque[float] = deque()
         self._closing = False
         self._logged_in = False
         self._read_task: asyncio.Task[None] | None = None
-        self._keepalive_task: asyncio.Task[None] | None = None
+        self._probe_task: asyncio.Task[None] | None = None
         self._reconnect_task: asyncio.Task[None] | None = None
         self._schedule_replies: set[str] = set()
 
@@ -289,13 +343,17 @@ class RA2Driver(LutronDriver):
             raise DriverError(f"Could not parse RA2 integration report XML: {exc}") from exc
         self._db_xml = text
         await self._open()
-        if self._keepalive_task is None or self._keepalive_task.done():
-            self._keepalive_task = asyncio.create_task(self._keepalive_loop())
+        if self._probe_task is None or self._probe_task.done():
+            self._probe_task = asyncio.create_task(self._probe_loop())
 
     async def close(self) -> None:
         self._closing = True
-        tasks = [t for t in (self._keepalive_task, self._reconnect_task, self._read_task) if t]
-        self._keepalive_task = self._reconnect_task = self._read_task = None
+        self._cancel_download.set()
+        if self._download_task is not None:
+            self._download_task.cancel()
+            self._download_task = None
+        tasks = [t for t in (self._probe_task, self._reconnect_task, self._read_task) if t]
+        self._probe_task = self._reconnect_task = self._read_task = None
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -309,7 +367,12 @@ class RA2Driver(LutronDriver):
         return self._inventory
 
     async def _load_db_xml(self) -> str:
-        """Read the integration report from a local file, else from the repeater."""
+        """Read the integration report from a local file, else from the repeater.
+
+        The download is slow and sometimes stalls, so every good copy is kept in the app's data
+        folder.  When the download fails, or is still running after ``cache_grace`` seconds, the
+        driver starts from that copy instead of failing the whole connect.
+        """
         report = (self.config.integration_report or "").strip()
         if report:
             path = Path(report).expanduser()
@@ -317,18 +380,120 @@ class RA2Driver(LutronDriver):
                 data = await asyncio.to_thread(path.read_bytes)
             except OSError as exc:
                 raise DriverError(f"Cannot read integration report {path}: {exc}") from exc
-        else:
-            if not self.config.host:
-                raise DriverError("No RA2 Main Repeater host configured")
-            url = f"http://{self.config.host}/DbXmlInfo.xml"
+            self.inventory_source = "file"
+            return data.decode("utf-8-sig", errors="replace")
+
+        if not self.config.host:
+            raise DriverError("No RA2 Main Repeater host configured")
+        host = self.config.host
+        cached = await asyncio.to_thread(self._read_cache)
+        cancel = self._cancel_download = threading.Event()
+        task = asyncio.create_task(asyncio.to_thread(self._download, cancel))
+        self._download_task = task
+        if cached is None:
             try:
-                data = await asyncio.to_thread(_http_get, url, 30.0)
-            except Exception as exc:  # urllib raises a zoo of exception types
-                raise DriverError(
-                    f"Could not download {url}: {exc}. Save that page from a browser and "
-                    "set it as the integration report file instead."
-                ) from exc
-        return data.decode("utf-8-sig", errors="replace")
+                text = await task
+            except BaseException:
+                cancel.set()
+                raise
+            self.inventory_source = "download"
+            return text
+
+        try:
+            done, _ = await asyncio.wait({task}, timeout=self.cache_grace)
+        except BaseException:
+            cancel.set()
+            task.cancel()
+            raise
+        if done and not task.cancelled() and task.exception() is None:
+            self.inventory_source = "download"
+            return task.result()
+        if done:
+            reason = "cancelled" if task.cancelled() else str(task.exception())
+            log.warning("%s Starting from the copy saved earlier.", reason)
+        else:
+            log.warning("The repeater at %s is slow to hand over DbXmlInfo.xml; starting from the "
+                        "copy saved earlier while the download carries on.", host)
+            task.add_done_callback(lambda t: self._finished_late(t, cached))
+        self.inventory_source = "cache"
+        return cached
+
+    def _finished_late(self, task: asyncio.Task[str], used: str) -> None:
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            log.warning("%s", exc)
+        elif task.result() != used:
+            log.info("The Lutron programming changed since the saved copy was made; "
+                     "Save & reconnect (or restart the app) to load the new one.")
+        else:
+            log.info("Downloaded DbXmlInfo.xml; it matches the saved copy.")
+
+    # -- DbXmlInfo.xml download and cache ----------------------------------
+    def _cache_file(self) -> Path:
+        if self._cache_dir is not None:
+            folder = self._cache_dir
+        else:
+            from ..config import data_dir
+
+            folder = data_dir() / "cache"
+        return folder / f"dbxml-{re.sub(r'[^A-Za-z0-9_.-]', '_', str(self.config.host))}.xml"
+
+    def _read_cache(self) -> str | None:
+        """The last good download for this repeater, or None."""
+        try:
+            path = self._cache_file()
+            text = path.read_bytes().decode("utf-8-sig", errors="replace")
+            parse_db_xml(text)
+            return text
+        except FileNotFoundError:
+            return None
+        except (OSError, ET.ParseError, ValueError) as exc:
+            log.warning("Ignoring the saved copy of DbXmlInfo.xml: %s", exc)
+            return None
+
+    def _write_cache(self, text: str) -> None:
+        try:
+            path = self._cache_file()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_bytes(text.encode("utf-8"))  # bytes: text mode would turn each CRLF into CR CR LF on Windows
+            os.replace(tmp, path)
+        except OSError as exc:
+            log.warning("Could not save a copy of DbXmlInfo.xml: %s", exc)
+
+    def _download(self, cancel: threading.Event) -> str:
+        """Blocking: fetch and check DbXmlInfo.xml, retrying; keep a copy.  Raises DriverError."""
+        host = self.config.host
+        last = "no answer"
+        for attempt in range(1, self.download_attempts + 1):
+            # One download at a time: the repeater's web server starves a second, concurrent request.
+            while not _DOWNLOAD_LOCK.acquire(timeout=0.5):
+                if cancel.is_set():
+                    raise DriverError("The DbXmlInfo.xml download was cancelled")
+            try:
+                data = _fetch_db_xml(host, self.http_port, cancel, self.read_timeout)
+                parse_db_xml(data)  # a download cut short is not valid XML; retry rather than cache it
+                text = data.decode("utf-8-sig", errors="replace")
+                self._write_cache(text)
+                return text
+            except _Cancelled:
+                raise DriverError("The DbXmlInfo.xml download was cancelled") from None
+            except (OSError, http.client.HTTPException, ET.ParseError, ValueError) as exc:
+                last = _describe(exc)
+                log.debug("DbXmlInfo.xml attempt %d/%d from %s failed: %s",
+                          attempt, self.download_attempts, host, last)
+            finally:
+                _DOWNLOAD_LOCK.release()
+            if attempt < self.download_attempts:
+                pause = self.download_pause[min(attempt - 1, len(self.download_pause) - 1)] \
+                    if self.download_pause else 0.0
+                if cancel.wait(pause):
+                    raise DriverError("The DbXmlInfo.xml download was cancelled")
+        raise DriverError(
+            f"Could not download http://{host}/DbXmlInfo.xml ({last}; tried {self.download_attempts} "
+            "times). Save that page from a browser and set it as the integration report file instead.")
 
     async def _open(self) -> None:
         """Open the telnet socket, log in and start monitoring."""
@@ -383,6 +548,7 @@ class RA2Driver(LutronDriver):
             self._logged_in = False
             self._writer = self._reader = None
             self._output_sent_at.clear()  # the replies will never come
+            self._probes_sent.clear()
             self.metrics.mark_disconnected()
         if writer is not None:
             writer.close()
@@ -435,16 +601,27 @@ class RA2Driver(LutronDriver):
                 log.warning("RA2 reconnect failed (%s); retrying in %.0fs", exc, delay)
                 delay = min(delay * 2, self.reconnect_max_delay)
 
-    async def _keepalive_loop(self) -> None:
-        # Some network gear drops idle TCP sessions; a cheap query keeps it alive
-        # and surfaces a dead socket quickly (the write fails -> reconnect).
+    async def _probe_loop(self) -> None:
+        # Every few seconds ask the repeater for its clock (a cheap query that always
+        # gets a reply) and time the answer: that round trip, which includes any queue
+        # of commands ahead of it, is the latency the GUI graphs. It doubles as the
+        # keepalive: some network gear drops idle TCP sessions, and a dead socket
+        # surfaces here quickly (the write fails -> reconnect).
+        last = time.monotonic()
+        tick = min(self.probe_interval, self.probe_fast)
         while not self._closing:
-            await asyncio.sleep(self.keepalive_interval)
-            if self.connected:
+            await asyncio.sleep(tick)
+            # Probe often while commands are flowing or replies are outstanding, so a backlog shows
+            # up within a fraction of a second; rarely when idle.
+            busy = self.metrics.commands.rate() > 0 or bool(self._probes_sent)
+            if time.monotonic() - last < (tick if busy else self.probe_interval) - 1e-3:
+                continue
+            last = time.monotonic()
+            if self.connected and len(self._probes_sent) < self.max_probes_waiting:
                 try:
-                    await self._send("?SYSTEM,1")
+                    await self._send(PROBE_COMMAND)
                 except Exception as exc:
-                    log.warning("RA2 keepalive failed: %s", exc)
+                    log.warning("RA2 latency probe failed: %s", exc)
                     if self._writer is not None:
                         self._writer.close()  # read loop sees EOF and reconnects
 
@@ -460,12 +637,12 @@ class RA2Driver(LutronDriver):
             except ValueError:
                 return
             sent_at = self._output_sent_at.pop(parts[1], None)
-            if sent_at is not None:
-                ms = (time.monotonic() - sent_at) * 1000
-                self.metrics.echo.add(ms)
-                if log.isEnabledFor(logging.DEBUG):
-                    log.debug("RA2 zone %s echoed %.0f ms after the command", parts[1], ms)
+            if sent_at is not None and log.isEnabledFor(logging.DEBUG):
+                log.debug("RA2 zone %s echoed %.0f ms after the command", parts[1], (time.monotonic() - sent_at) * 1000)
             await self._notify(parts[1], level)
+        elif cmd == "~SYSTEM" and len(parts) >= 2 and parts[1] == "1":
+            if self._probes_sent:
+                self.metrics.latency.add((time.monotonic() - self._probes_sent.popleft()) * 1000)
         elif cmd == "~TIMECLOCK" and len(parts) >= 5 and parts[2] == "6":
             sid = f"{parts[1]}:{parts[3]}"
             self._schedule_replies.add(sid)
@@ -482,24 +659,100 @@ class RA2Driver(LutronDriver):
         Replies are not awaited - they arrive asynchronously via the reader
         (monitoring) which keeps multi-zone commands as simultaneous as possible.
         """
-        async with self._lock:
-            writer = self._writer
-            if writer is None or not self._logged_in:
-                raise DriverError("Not connected to the RadioRA 2 repeater")
-            now = time.monotonic()
-            for c in commands:
-                if c.startswith("#OUTPUT,"):
-                    self._output_sent_at[c.split(",", 2)[1]] = now
-                    self.metrics.commands.add(1, now)
-                writer.write(c.encode("ascii", errors="replace") + b"\r\n")
-            try:
-                await writer.drain()
-            except (ConnectionError, OSError) as exc:
-                raise DriverError(f"RA2 send failed: {exc}") from exc
+        waiter = _Waiter(sum(1 for c in commands if c.startswith("#OUTPUT,")))
+        self._waiters.add(waiter)
+        try:
+            async with self._lock:
+                self._waiters.discard(waiter)
+                outputs = waiter.outputs
+                if waiter.dropped:
+                    # clear_pending() ran while this call waited: its level commands are
+                    # dropped, anything else (schedules, queries) still goes out
+                    commands = tuple(c for c in commands if not c.startswith("#OUTPUT,"))
+                    outputs = 0
+                    if not commands:
+                        return
+                writer = self._writer
+                if writer is None or not self._logged_in:
+                    raise DriverError("Not connected to the RadioRA 2 repeater")
+                self._writing = outputs
+                try:
+                    now = time.monotonic()
+                    for c in commands:
+                        if c.startswith("#OUTPUT,"):
+                            self._output_sent_at[c.split(",", 2)[1]] = now
+                            self.metrics.commands.add(1, now)
+                        elif c == PROBE_COMMAND:
+                            # a reply lost to a dropped line must not pair every later probe with the wrong send
+                            while self._probes_sent and now - self._probes_sent[0] > self.probe_expiry:
+                                self._probes_sent.popleft()
+                            self._probes_sent.append(now)
+                        writer.write(c.encode("ascii", errors="replace") + b"\r\n")
+                    try:
+                        await writer.drain()
+                    except (ConnectionError, OSError) as exc:
+                        raise DriverError(f"RA2 send failed: {exc}") from exc
+                finally:
+                    self._writing = 0
+        finally:
+            self._waiters.discard(waiter)
 
-    def inflight(self) -> int:
-        cutoff = time.monotonic() - self.inflight_expiry
+    def queued(self) -> int:
+        """Level commands this app is holding: waiting behind another write, or written
+        but not yet accepted by the network stack (the repeater is not reading)."""
+        return self._writing + sum(w.outputs for w in self._waiters)
+
+    async def clear_pending(self) -> int:
+        """Drop the level commands waiting for the connection and return how many.
+
+        Commands already handed to the socket cannot be recalled, and neither can
+        the repeater's own queue.
+        """
+        dropped = 0
+        for w in self._waiters:
+            w.dropped = True
+            dropped += w.outputs
+        self._waiters.clear()
+        return dropped
+
+    def inflight(self, max_age: float | None = None) -> int:
+        cutoff = time.monotonic() - (self.inflight_expiry if max_age is None else max_age)
         return sum(1 for t in self._output_sent_at.values() if t >= cutoff)
+
+    def load(self) -> LinkLoad:
+        """Latency of the newest probe or, if a probe is still waiting, how long it has waited.
+
+        The second part matters: when the repeater stalls no replies arrive, so the newest
+        round trip would look fine while the queue grows. The oldest unanswered probe cannot hide it.
+        """
+        now = time.monotonic()
+        lat = self.metrics.latency.fresh_last(LOAD_STALE_S, now)
+        if self._probes_sent:
+            waited = (now - self._probes_sent[0]) * 1000.0
+            lat = waited if lat is None else max(lat, waited)
+        return LinkLoad(lat, self.inflight(self.window_expiry))
+
+    async def reset_connection(self) -> bool:
+        """Abort the socket with a TCP reset (SO_LINGER 0) instead of a polite close.
+
+        A normal close still delivers everything in the network buffers, so a repeater that was
+        sent a storm keeps working through it. A reset throws away what has not been delivered
+        (our send buffer) and, on stacks that free it on reset, what the repeater has not read yet.
+        What the repeater has already accepted into its own queue is out of reach either way. The
+        read loop notices and reconnects.
+        """
+        writer = self._writer
+        if writer is None:
+            return False
+        sock = writer.get_extra_info("socket")
+        if sock is not None:
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            except OSError:
+                pass
+        log.warning("Resetting the connection to the repeater to discard commands still on the wire")
+        writer.transport.abort()
+        return True
 
     @staticmethod
     def output_command(zone_id: str, level: float, fade: float | None = None) -> str:
@@ -578,11 +831,67 @@ class RA2Driver(LutronDriver):
 
 
 # -- helpers ---------------------------------------------------------------
-def _http_get(url: str, timeout: float) -> bytes:
-    # Bypass any system proxy - the repeater is always on the local network.
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    with opener.open(url, timeout=timeout) as resp:
-        return resp.read()
+_DOWNLOAD_LOCK = threading.Lock()
+
+
+class _Waiter:
+    """A _send() call waiting for the command lock."""
+
+    __slots__ = ("outputs", "dropped")
+
+    def __init__(self, outputs: int) -> None:
+        self.outputs = outputs  # its #OUTPUT commands
+        self.dropped = False  # clear_pending() ran while it waited
+
+
+class _Cancelled(Exception):
+    pass
+
+
+def _describe(exc: BaseException) -> str:
+    if isinstance(exc, TimeoutError):
+        return "timed out waiting for the repeater"
+    if isinstance(exc, ET.ParseError):
+        return f"the reply was not complete XML ({exc})"
+    return str(exc) or type(exc).__name__
+
+
+def _fetch_db_xml(host: str, port: int, cancel: threading.Event, read_timeout: float,
+                  *, connect_timeout: float = DOWNLOAD_CONNECT_TIMEOUT,
+                  total_timeout: float = DOWNLOAD_TOTAL_TIMEOUT) -> bytes:
+    """One blocking GET of /DbXmlInfo.xml.
+
+    ``read_timeout`` limits the wait for each piece of the reply, ``total_timeout`` the whole
+    transfer.  http.client never uses a system proxy, which is right: the repeater is local.
+    """
+    deadline = time.monotonic() + total_timeout
+    conn = http.client.HTTPConnection(host, port, timeout=connect_timeout)
+    try:
+        conn.connect()
+        assert conn.sock is not None
+        conn.sock.settimeout(read_timeout)
+        conn.request("GET", "/DbXmlInfo.xml",
+                     headers={"User-Agent": "Lutron-To-DMX-Bridge", "Accept": "*/*", "Connection": "close"})
+        resp = conn.getresponse()
+        if resp.status != 200:
+            raise OSError(f"HTTP {resp.status} {resp.reason}")
+        chunks: list[bytes] = []
+        while True:
+            if cancel.is_set():
+                raise _Cancelled
+            if time.monotonic() > deadline:
+                raise TimeoutError("timed out")
+            chunk = resp.read(8192)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        data = b"".join(chunks)
+        expected = resp.getheader("Content-Length")
+        if expected and expected.isdigit() and len(data) != int(expected):
+            raise OSError(f"the reply stopped after {len(data)} of {expected} bytes")
+        return data
+    finally:
+        conn.close()
 
 
 async def _read_until(reader: asyncio.StreamReader, tokens: tuple[bytes, ...],

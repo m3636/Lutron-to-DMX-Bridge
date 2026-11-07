@@ -24,6 +24,11 @@ log = logging.getLogger(__name__)
 #: The old folder is moved to the new name the first time the app starts (see :func:`data_dir`).
 LEGACY_HOME_ENV = "LUTRON_DMX_HOME"
 
+#: Values the settings accept; shared by the web API and the config import so both enforce the same rules.
+DRIVER_KINDS = ("simulator", "ra2", "leap")
+DMX_SOURCES = ("artnet", "sacn", "usb")
+DMX_PARAMS = ("intensity", "on_off")
+
 
 def _default_dir(name_win_mac: str, name_other: str) -> Path:
     if sys.platform == "win32":
@@ -162,6 +167,13 @@ class DmxConfig:
     #: level step in percent: a zone is only sent when its DMX value moved at least this far from the
     #: last command, and above 0.5 the level sent is rounded to a multiple of it (0 and 100 stay exact)
     resolution_pct: float = 0.5
+    #: slow down when the Lutron system falls behind, cap commands in flight, and pause on a DMX storm
+    #: (dmx/protect.py). Turn off only for a repeater you know can take the limit above.
+    protect: bool = True
+    #: round trip (ms) above which the repeater counts as behind and the command rate is cut
+    latency_limit_ms: float = 500.0
+    #: most level commands written but not yet echoed by the repeater (0 = no cap)
+    max_inflight: int = 40
     mappings: list[DmxFixtureMapping] = field(default_factory=list)
 
 

@@ -256,13 +256,45 @@ async def test_reconnects_after_drop(driver, repeater):
     await repeater.wait_for(lambda: driver.zone("40").level == 5)
 
 
-async def test_keepalive(repeater):
-    d = RA2Driver(make_config(repeater.port), keepalive_interval=0.05, connect_timeout=2)
+async def test_probe_doubles_as_keepalive(repeater):
+    d = RA2Driver(make_config(repeater.port), probe_interval=0.05, connect_timeout=2)
     await d.connect()
     try:
         await repeater.wait_for(lambda: "?SYSTEM,1" in repeater.commands)
     finally:
         await d.close()
+
+
+async def test_probe_round_trip_is_recorded_as_latency_even_when_idle(repeater):
+    d = RA2Driver(make_config(repeater.port), probe_interval=0.05, connect_timeout=2)
+    await d.connect()
+    try:
+        # no level command is ever sent: the graph must still get samples
+        await repeater.wait_for(lambda: d.link_status()["latency"]["count"] >= 3)
+        lat = d.link_status()["latency"]
+        assert lat["last"] is not None and lat["last"] < 1000
+        assert len(lat["history"]) >= 3 and all(ms >= 0 for _, ms in lat["history"])
+        assert d.link_status()["commands_total"] == 0  # probes are not level commands
+    finally:
+        await d.close()
+
+
+async def test_probe_replies_pair_first_in_first_out(driver):
+    driver.metrics.latency = type(driver.metrics.latency)()
+    t = time.monotonic()
+    driver._probes_sent.extend([t - 0.30, t - 0.10])
+    await driver._handle_line("GNET> ~SYSTEM,1,12:00:00")
+    await driver._handle_line("~SYSTEM,1,12:00:01")
+    hist = [ms for _, ms in driver.link_status()["latency"]["history"]]
+    assert len(hist) == 2 and 290 <= hist[0] <= 400 and 90 <= hist[1] <= 200
+    await driver._handle_line("~SYSTEM,1,12:00:02")  # a reply nobody is waiting for is ignored
+    assert driver.link_status()["latency"]["count"] == 2
+
+
+async def test_probes_waiting_too_long_are_forgotten_when_the_next_one_is_sent(driver):
+    driver._probes_sent.append(time.monotonic() - driver.probe_expiry - 1)  # its reply was lost
+    await driver._send("?SYSTEM,1")
+    assert len(driver._probes_sent) == 1
 
 
 async def test_backup(driver):
@@ -317,16 +349,20 @@ async def test_dmx_ramp_over_telnet_is_budgeted_and_pipelined(driver, repeater):
     while t <= 6.0:  # a 6 s ramp at 40 fps, flushed on the engine's own clock
         eng.process_frame(bytes([round(255 * t / 6.0)]) * n + bytes(512 - n), t)
         await eng.flush(t)
+        await asyncio.sleep(0.004)  # real time for the echoes: the in-flight window waits for them
         t += 0.025
+    for k in range(40):  # let the last targets out
+        await eng.flush(t + k * 0.05)
+        await asyncio.sleep(0.01)
     await repeater.wait_for(lambda: repeater.commands and
                             repeater.levels[zone_ids[0]] == 100.0 or len(repeater.commands) > 100)
     outputs = [c for c in repeater.commands if c.startswith("#OUTPUT")]
-    assert 20 <= len(outputs) <= 20 * 6 + 2 * n  # budget, not 5 Hz x zones x 6 s
+    assert 20 <= len(outputs) <= 20 * 8 + 2 * n  # budget over the ramp and the 2 s tail, not 5 Hz x zones x 6 s
     ramp = [c.split(",") for c in outputs if len(c.split(",")) == 5]
     assert ramp and all(0 < float(c[4]) <= 5 for c in ramp)  # fade given in seconds
 
 
-async def test_link_metrics_count_commands_and_echo_latency(driver, repeater):
+async def test_link_metrics_count_commands_and_clear_inflight_on_echo(driver, repeater):
     await repeater.wait_for(lambda: "?TIMECLOCK,70,6,3" in repeater.commands)
     base = driver.link_status()
     assert base["connected_for_s"] is not None and base["inflight"] == 0
@@ -335,7 +371,6 @@ async def test_link_metrics_count_commands_and_echo_latency(driver, repeater):
     st = driver.link_status()
     assert st["commands_total"] - base["commands_total"] == 2
     assert st["commands_per_s"] >= 2
-    assert st["echo"]["count"] >= 2 and st["echo"]["last"] is not None
     assert st["inflight"] == 0  # both were echoed
 
 
@@ -353,3 +388,32 @@ async def test_link_metrics_across_a_reconnect(driver, repeater):
     st = driver.link_status()
     assert st["reconnects"] == 1 and st["reconnect_attempts"] == 0
     assert st["retry_in_s"] is None and st["connected_for_s"] is not None
+
+
+async def test_clear_pending_drops_level_commands_waiting_for_the_connection(driver, repeater):
+    assert driver.queued() == 0
+    await driver._lock.acquire()  # a write that is stuck: the repeater is not reading
+    try:
+        waiting = [asyncio.create_task(driver.set_level("40", 10.0)),
+                   asyncio.create_task(driver.set_levels({"40": 20.0, "50": 30.0})),
+                   asyncio.create_task(driver._send("?SYSTEM,1"))]
+        await asyncio.sleep(0.05)
+        assert driver.queued() == 3  # the query is not a level command
+        assert await driver.clear_pending() == 3
+        assert driver.queued() == 0
+    finally:
+        driver._lock.release()
+    await asyncio.gather(*waiting)
+    await repeater.wait_for(lambda: "?SYSTEM,1" in repeater.commands)
+    await asyncio.sleep(0.05)
+    assert not any(c.startswith("#OUTPUT") for c in repeater.commands)
+    assert driver.queued() == 0
+    # Sending works as before afterwards.
+    await driver.set_level("40", 55.0)
+    await repeater.wait_for(lambda: any(c.startswith("#OUTPUT,40,1,55") for c in repeater.commands))
+
+
+async def test_clear_pending_leaves_commands_that_are_already_written(driver, repeater):
+    await driver.set_level("40", 40.0)
+    assert await driver.clear_pending() == 0
+    await repeater.wait_for(lambda: any(c.startswith("#OUTPUT,40,1,40") for c in repeater.commands))

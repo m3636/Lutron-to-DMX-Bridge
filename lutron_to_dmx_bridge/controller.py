@@ -11,7 +11,7 @@ import logging
 import uuid
 
 from .config import AppConfig, DriverConfig, SceneConfig
-from .drivers import LutronDriver, create_driver
+from .drivers import DriverError, LutronDriver, create_driver
 from .schedule_sets import ScheduleSetManager
 
 log = logging.getLogger(__name__)
@@ -24,18 +24,35 @@ class Controller:
         self.dmx = None  # set by start() when DMX is enabled; see lutron_to_dmx_bridge.dmx.engine
         self.last_error: str | None = None
         self._lock = asyncio.Lock()
+        #: the connect that start() is waiting on, so a settings change can stop it
+        self._starting: asyncio.Task | None = None
         self.schedule_sets = ScheduleSetManager(self)
 
     # -- lifecycle -------------------------------------------------------
     async def start(self) -> None:
+        task = self._starting = asyncio.create_task(self.driver.connect())
         try:
-            await self.driver.connect()
-            self.last_error = None
-        except Exception as exc:  # keep the GUI usable so the user can fix settings
-            log.exception("Driver connect failed")
-            self.last_error = str(exc)
+            await asyncio.wait({task})  # does not raise if the connect fails or is cancelled
+        finally:
+            task.cancel()  # start() itself was cancelled (shutdown): do not leave the connect running
+            if self._starting is task:
+                self._starting = None
+        if task.cancelled():
+            pass  # reconfigure_driver() replaced the driver while it was connecting
+        elif task.exception() is not None:  # keep the GUI usable so the user can fix settings
+            self._connect_failed(task.exception())
             await self._try_rediscover()
+        else:
+            self.last_error = None
         await self.restart_dmx()
+
+    def _connect_failed(self, exc: BaseException) -> None:
+        """A DriverError already says what is wrong in one line; only a surprise gets a traceback."""
+        if isinstance(exc, DriverError):
+            log.error("Driver connect failed: %s", exc)
+        else:
+            log.error("Driver connect failed", exc_info=exc)
+        self.last_error = str(exc)
 
     async def _try_rediscover(self) -> None:
         """If the saved IP no longer answers, look the processor up again by its mDNS name."""
@@ -56,8 +73,7 @@ class Controller:
             await self.driver.connect()
             self.last_error = None
         except Exception as exc:
-            log.exception("Driver connect failed")
-            self.last_error = str(exc)
+            self._connect_failed(exc)
 
     async def stop(self) -> None:
         if self.dmx is not None:
@@ -67,6 +83,8 @@ class Controller:
 
     async def reconfigure_driver(self, driver_config: DriverConfig) -> None:
         async with self._lock:
+            if self._starting is not None:  # the first connect is still running; the new settings win
+                self._starting.cancel()
             await self.driver.close()
             self.config.driver = driver_config
             self.config.save()
@@ -75,8 +93,7 @@ class Controller:
                 await self.driver.connect()
                 self.last_error = None
             except Exception as exc:
-                log.exception("Driver connect failed")
-                self.last_error = str(exc)
+                self._connect_failed(exc)
             if self.dmx is not None:
                 self.dmx.controller = self
 
@@ -97,10 +114,51 @@ class Controller:
     def save(self) -> None:
         self.config.save()
 
+    async def import_config(self, parsed, sections: list[str] | None = None, restore_active_set: bool = False):
+        """Replace settings from a parsed export (see ``config_transfer``) and apply them to the running app."""
+        from .config_transfer import import_into_config
+
+        result = import_into_config(self.config, parsed, sections, restore_active_set)
+        if result.driver_changed:
+            await self.reconfigure_driver(self.config.driver)
+        if result.dmx_changed or result.driver_changed:
+            try:
+                await self.restart_dmx()
+            except Exception as exc:  # the settings are saved either way
+                log.exception("DMX restart after import failed")
+                result.warnings.append(f"DMX restart failed: {exc}")
+        return result
+
     # -- direct control --------------------------------------------------
     async def set_level(self, zone_id: str, level: float, fade: float | None = None) -> None:
         level = max(0.0, min(100.0, float(level)))
         await self.driver.set_level(zone_id, level, fade)
+
+    # -- command queue ---------------------------------------------------
+    def queue_status(self) -> dict:
+        """What this app is holding back from the Lutron system, for the GUI."""
+        dmx = self.dmx.pending() if self.dmx is not None else 0
+        queued = self.driver.queued()
+        return {"dmx_pending": dmx, "driver_queued": queued, "waiting": dmx + queued,
+                "inflight": self.driver.inflight()}
+
+    async def clear_queue(self) -> dict:
+        """Drop every level command this app has not sent yet.
+
+        That is the DMX values waiting for the rate limits and any commands waiting
+        for the connection. Commands already written to the Lutron system cannot be
+        recalled, so `inflight` (sent, not echoed yet) and `fading` (lights still
+        fading from an earlier command) are reported for the GUI to explain.
+        """
+        dmx = self.dmx.clear_pending() if self.dmx is not None else {"dropped": 0, "fading": 0}
+        driver = await self.driver.clear_pending()
+        result = {"dmx_dropped": dmx["dropped"], "driver_dropped": driver,
+                  "dropped": dmx["dropped"] + driver, "fading": dmx["fading"],
+                  "inflight": self.driver.inflight()}
+        if result["dropped"]:
+            log.info("Cleared the Lutron queue: %d waiting (%d DMX values, %d commands) dropped",
+                     result["dropped"], dmx["dropped"], driver)
+        return result
 
     # -- custom scenes (stored by this app, not in Lutron) ---------------
     def scene(self, scene_id: str) -> SceneConfig | None:

@@ -12,6 +12,7 @@ Local-only control of a Lutron **RadioRA 2** (Main Repeater) or **RA3 / RA2 Sele
 - DMX input: Art-Net, sACN, or a USB DMX adapter that can *receive*. Each light is mapped to a start address and its parameters (intensity, on/off, fade) take sequential channels.
 - Status area: five chips in the header (Lutron, DMX in, Output, Alerts, Server) show health at a glance, click one for the details, or open the **Status** tab for the same numbers plus 2-minute graphs. See [Reading the status area](#reading-the-status-area).
 - JSON backup of everything the system lets us read.
+- Export and import of this app's own settings (Lutron connection, DMX mapping, scenes, schedule sets) as one versioned file, to move to another computer or recover after the settings were lost. See [Export and import settings](#export-and-import-settings).
 
 ## Setting up on a Mac (step-by-step guide)
 
@@ -80,6 +81,7 @@ You will not need to do Part 3 again. The app remembers your settings, even afte
 - **Scenes:** make your own looks (for example "Dinner"). Set the lights how you like them and click **Snapshot all lights**, or click **New scene** to pick lights and levels yourself. Later, click **Activate** to set every light in the scene at once. These scenes belong to this app. They are not Lutron's own scenes, and they do not change anything inside the Lutron system.
 - **Schedules:** see the timed events in the Lutron system and turn them off or back on. Nothing is ever deleted.
 - **DMX:** connects your lighting console. Ask whoever set up the DMX side before changing anything here.
+- **Settings → Export & import settings:** saves everything the app needs to be rebuilt into one file, and restores it later. See [Export and import settings](#export-and-import-settings).
 - **Status:** shows whether everything is healthy. The small coloured chips at the top right turn amber or red when something needs attention.
 - **Quit the app:** close the small log window, or click **Quit** in it. The control page in your browser stops working when the app is closed. To keep it running, **minimise** the log window (the yellow button) instead of closing it.
 - **Updates:** a blue bar appears at the top of the page when a newer version is out. Click **Update now** when it suits you. Your settings and scenes are kept.
@@ -93,6 +95,7 @@ You will not need to do Part 3 again. The app remembers your settings, even afte
 | The Mac says the app is damaged or cannot be opened, and there is no **Open Anyway** button | Double-click the app once more, wait a moment, then look in **System Settings → Privacy & Security** again. Still not there? Delete the app from Applications, download the zip again, and repeat Part 1 and Part 2. |
 | The browser does not open | Click **Open web GUI** in the log window. Or type `http://127.0.0.1:8080` into your browser's address bar. If the log window says it picked a different port (for example 8081), use that number instead. |
 | **Find my controller** finds nothing | Make sure your Mac is on the same network as the Lutron system. Check **System Settings → Privacy & Security → Local Network** (the switch for this app must be on). Tick **Also scan the whole network** and try again, or type the controller's address yourself. |
+| Log says "Could not download ... DbXmlInfo.xml: timed out" (RadioRA 2) | The repeater's built-in web server is slow and handles one request at a time. The app waits longer, retries, and keeps a copy of the last good download in its settings folder (`cache/`); if the download fails or is slow it starts from that copy. The very first start has no copy yet, so if it keeps failing, save `http://<repeater IP>/DbXmlInfo.xml` from a browser and set it as the **Integration Report path** in Settings. |
 | Lights show up with numbers instead of names (RadioRA 2) | The app needs the system's "Integration Report" file for the names. Ask the person who set up the system for it, then put its location in **Integration Report path** in Settings and click **Save & reconnect**. |
 | The page says it cannot connect, or the **Lutron** chip at the top is red | Check the Mac's network, then check the address, user name and password in Settings. |
 
@@ -144,6 +147,27 @@ Things that stop discovery: the computer is on a different network/VLAN than the
 
 Backup: `lutron-to-dmx-bridge backup` or the Settings tab. On RadioRA 2 this is a reference snapshot; the RA2 programming software project file is the real recovery source. **A backup contains the controller's full project export, including the installer's name and contact details. Keep it private and never attach it to an issue.**
 
+## Export and import settings
+
+The Lutron backup above saves what the *Lutron system* knows. This is different: it saves **this app's own settings** so you can rebuild the app on a fresh install, move it to another computer, or recover after `config.json` was lost. One JSON file holds:
+
+- the Lutron connection (system type, address, port, mDNS name, integration report path, certificate folder path),
+- the DMX input settings and the address mapping,
+- your custom scenes,
+- the schedule sets (such as "Performance mode"), and the saved prior schedule states of a set that was active at the time,
+- the update-check preference, and the web GUI address and port.
+
+**In the web GUI:** Settings → *Export & import settings*. **From the command line:** `lutron-to-dmx-bridge export-config [FILE]` and `lutron-to-dmx-bridge import-config FILE`. **Over the API:** `GET /api/config/export`, `POST /api/config/import/preview` and `POST /api/config/import`.
+
+**Credentials are opt-in.** By default the file does **not** contain the RadioRA 2 integration login, the GitHub update token or the LEAP pairing keys, and importing such a file keeps whatever the app already has. Tick *Include the Lutron integration login, update token and pairing certificates* (CLI: `--include-credentials`) to put them in, so a brand-new install can reconnect without pairing again. A file made that way holds passwords and private keys in plain text: keep it private, never post or attach it anywhere, and delete it when you are done. The app writes the files it creates itself (CLI export, the automatic pre-import backup) readable by your user only.
+
+**Importing** shows what would change first, section by section, with warnings (for example scenes that use lights the connected Lutron system does not have). You choose which sections to import. A ticked section is replaced as a whole, so lights, scenes or mappings that are not in the file are removed from that section. Before anything is changed the current settings are saved, credentials included, to `backups/config-before-import-<time>.json` in the app's data folder, and importing that file undoes the import. The web GUI and the Lutron connection are reconnected automatically; with the command line, stop the app first (it refuses to import while the app seems to be running, because the running app would overwrite the result).
+
+- The web address and port are **not** selected by default, because they decide who on the network can reach the app. Tick them yourself, or pass `--sections` on the command line.
+- A schedule set cannot be replaced while a set that the file does not contain is active: restore the schedules first (Schedules tab), or leave that section out. If the file was made while a set was active you can also bring back its saved schedule states, but only when no set is active now.
+- Paths such as the integration report and the certificate folder are specific to a computer. Import warns when one does not exist on this computer.
+- **Versions:** the file records a format number (`schema_version`) and the app version that wrote it. A file from a *newer* format is refused with a message to update the app; an older format is upgraded automatically; a file from a newer app version with the same format is accepted with a warning, and settings the running version does not know are ignored. The older Lutron system backup file (`Download backup`) can also be imported; only its app settings are used, never its (masked) password.
+
 ## DMX hardware
 - **Network (recommended):** a node such as the PKnight CR021R turns a physical DMX input into Art-Net/sACN. Point the app at that universe.
 - **USB input:** needs an adapter that can receive, such as the Enttec DMX USB Pro.
@@ -159,12 +183,24 @@ A RadioRA 2 repeater works through its telnet commands one at a time and passes 
 - Art-Net universes start at 0; sACN universes start at 1.
 - **Testing without hardware:** [`qlcplus/`](qlcplus/README.md) has a QLC+ workspace that acts as a lighting desk and drives the simulator over Art-Net.
 
+### Protecting the repeater from a DMX storm
+Closing this app does not recall commands the repeater has already accepted. If something sends it more than it can carry out (a console chase gone wrong, a feedback loop, a limit set higher than the repeater can take), the backlog sits inside the repeater and the lights keep dimming for as long as it takes to work through it, minutes if it was bad. A fixed limit cannot prevent that, because nobody knows the right number for your system, so with **Protect the repeater** on (the default, DMX tab) the limit above is only a ceiling and the app watches the repeater:
+
+- **It slows down while the repeater is behind.** While commands are flowing the app times a round trip to the repeater twice a second. Above the **latency limit** (500 ms) the allowed commands per second are halved, at most once per queue-drain time; while it is quick again they climb back by 4 per second. The rate saw-tooths around what your repeater can really do. An unanswered probe counts for as long as it has waited, so a stalled repeater cannot hide by going quiet.
+- **It never has much in flight.** The number of commands written but not echoed yet is capped at rate x latency limit (and at **Max commands in flight**, 40). A whole-house cue is therefore spread over a fraction of a second instead of going out as one burst; raise the commands-per-second limit if you want bigger bursts.
+- **It holds back when the repeater is seconds behind.** Nothing is sent until the round trip drops again. The app keeps only the latest DMX value per light, so nothing piles up here either, and the lights catch up afterwards.
+- **It pauses on a storm and raises an alert** (Alerts chip, red banner with a **Resume DMX** button): more than 200 DMX frames per second for 2 s (DMX512 tops out at 44), lights told to reverse direction by 10% or more over 300 times per second for 3 s (noise, a strobe or a loop that dimmers cannot follow), or a repeater that has not recovered after 20 s at the minimum rate. An automatic pause stays until you resume it; a resume starts slowly and ramps up.
+- **Pause DMX** in the header does the same on demand: the input is still tracked, nothing is written to the Lutron system. When the repeater is behind, pausing also resets the network connection (TCP reset), which discards commands still sitting in network buffers instead of delivering them after the pause. Commands the repeater has already accepted cannot be recalled.
+
+`python tools/simulate_storm.py` replays a storm against the simulator's modeled repeater (a queue that takes a fixed time per command) with and without protection. To try the app against such a repeater, set `LUTRON_DMX_SIM_SERVICE_MS=100` and use the simulator driver. Untested against a real repeater: the thresholds are guesses until the latency graph shows what yours does.
+
 ## Reading the status area
 The chips in the top right are always visible. Green is fine, amber is worth a look, red is a problem.
 
-- **Lutron** shows the median time the repeater takes to echo a command back (over the last minute). Amber if the slowest 5% take over 500 ms; red when not connected. "In flight" in the details is commands sent that have not been echoed yet. The repeater's own internal queue cannot be seen, so a growing in-flight count with rising latency is the sign that it is falling behind.
+- **Lutron** shows the median round-trip latency to the repeater over the last minute: every couple of seconds, busy or idle, the app asks the repeater for its clock and times the answer, so commands queued ahead of it show up as higher latency. The Status tab graphs it for the last 2 minutes. Amber if the slowest 5% take over 500 ms; red when not connected. "In flight" in the details is commands sent that have not been echoed yet. The repeater's own internal queue cannot be seen, so a growing in-flight count with rising latency is the sign that it is falling behind.
 - **DMX in** shows frames per second and the universe. Amber with "no data" when no packet has arrived for 2 seconds, and the details list any other universe it is seeing (a common cause of a silent input).
-- **Output** shows commands per second sent to the Lutron system against the limit from the DMX tab, plus how many lights are waiting because of that limit.
+- **Output** shows commands per second sent to the Lutron system against the limit from the DMX tab (the limit shown drops while the app is slowing down to protect the repeater), plus how many lights are waiting because of it. Red "paused" when DMX output is paused.
+- **Clear Lutron queue** (Status tab) drops every update the app has not sent yet: lights held back by the command limit and any commands waiting for the connection. A DMX value you clear stays ignored until the console changes it, so a console that keeps sending the same frame does not refill the queue, but one that is still running a fade resumes with its next step. The button shows how many updates are waiting; a toast says how many were dropped. **What it cannot do:** commands already written to the repeater (the "In flight" count) are out of the app's hands and the repeater will carry them out, and a fade the repeater has already started finishes. Only the app's own queue is cleared. The repeater's internal queue cannot be seen or emptied.
 - **Alerts** counts warnings and errors logged since the app started, or since you pressed **Clear alerts** on the Status tab, which also lists the latest ones.
 - **Server** is the connection between this browser and the app (normally on this computer): "live", "polling" when live updates dropped, or "offline".
 

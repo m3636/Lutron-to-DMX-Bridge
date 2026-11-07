@@ -23,7 +23,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .. import __version__
-from ..config import DmxConfig, DmxFixtureMapping, DriverConfig, data_dir
+from .. import config_transfer
+from ..config import DMX_PARAMS, DMX_SOURCES, DRIVER_KINDS, DmxConfig, DmxFixtureMapping, DriverConfig, data_dir
 from ..metrics import STARTED_AT, install_log_counter, uptime_s
 from ..schedule_sets import ScheduleSetError
 from ..updater import UpdateError, Updater
@@ -33,9 +34,6 @@ log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
 PASSWORD_PLACEHOLDER = "********"
-DRIVER_KINDS = ("simulator", "ra2", "leap")
-DMX_SOURCES = ("artnet", "sacn", "usb")
-DMX_PARAMS = ("intensity", "on_off")
 STATUS_INTERVAL = 1.0  # seconds between status pushes, whatever else is flowing
 
 
@@ -108,7 +106,14 @@ class DmxSettingsBody(BaseModel):
     max_rate_hz: float = Field(default=5.0, gt=0, le=50)
     max_commands_per_s: float = Field(default=20.0, ge=0, le=1000)
     resolution_pct: float = Field(default=0.5, ge=0.1, le=25)
+    protect: bool = True
+    latency_limit_ms: float = Field(default=500.0, ge=50, le=10000)
+    max_inflight: int = Field(default=40, ge=0, le=500)
     mappings: list[MappingBody] = Field(default_factory=list)
+
+
+class DmxPauseBody(BaseModel):
+    paused: bool
 
 
 class AutoAssignBody(BaseModel):
@@ -130,6 +135,17 @@ class UpdateApplyBody(BaseModel):
 
 class UpdateDismissBody(BaseModel):
     version: str = Field(min_length=1, max_length=50)
+
+
+class ConfigImportBody(BaseModel):
+    #: the parsed JSON of an export file
+    document: dict[str, Any]
+    #: section ids to import; omitted = the defaults the file has
+    sections: list[str] | None = None
+    #: also bring back the saved prior schedule states of a set that was active when the file was exported
+    restore_active_set: bool = False
+    #: required to actually import (the preview does not need it)
+    confirm: bool = False
 
 
 class PairBody(BaseModel):
@@ -379,6 +395,9 @@ def create_app(controller, discover=None, updater: Updater | None = None, bind_h
         link: dict = {}
         with contextlib.suppress(Exception):
             link = d.link_status()
+        queue: dict = {}
+        with contextlib.suppress(Exception):
+            queue = controller.queue_status()
         return {
             "system_name": getattr(d, "system_name", "Lutron"),
             "connected": connected,
@@ -387,6 +406,7 @@ def create_app(controller, discover=None, updater: Updater | None = None, bind_h
             "dmx": await dmx_status(),
             "schedule_set": controller.schedule_sets.status(),
             "lutron": link,
+            "queue": queue,
             "alerts": log_counter.snapshot(),
             "update": update_state(),
             "app": {"version": __version__, "started_at": STARTED_AT, "uptime_s": round(uptime_s()),
@@ -402,6 +422,12 @@ def create_app(controller, discover=None, updater: Updater | None = None, bind_h
     async def api_alerts_clear():
         log_counter.clear()
         return {"ok": True}
+
+    @app.post("/api/queue/clear")
+    async def api_queue_clear():
+        """Drop the level commands waiting inside the app; see Controller.clear_queue."""
+        result = await driver_call(controller.clear_queue())
+        return {"ok": True, **result, "status": await status_payload()}
 
     @app.get("/api/inventory")
     async def api_inventory():
@@ -574,6 +600,7 @@ def create_app(controller, discover=None, updater: Updater | None = None, bind_h
         now = datetime.now()
         cfg = controller.config.to_dict()
         cfg["driver"] = _mask_driver(controller.config.driver)
+        cfg["updates"]["token"] = PASSWORD_PLACEHOLDER if controller.config.updates.token else ""
         payload = {
             "format": "lutron-to-dmx-bridge-backup",
             "version": 1,
@@ -596,6 +623,67 @@ def create_app(controller, discover=None, updater: Updater | None = None, bind_h
             media_type="application/json",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
+
+    # -- settings export / import ------------------------------------------
+    def parse_import(body: ConfigImportBody):
+        try:
+            return config_transfer.parse_document(body.document)
+        except config_transfer.ConfigImportError as exc:
+            raise HTTPException(exc.status, str(exc)) from exc
+
+    @app.get("/api/config/export")
+    async def api_config_export(credentials: bool = False):
+        doc = config_transfer.build_export(controller.config, include_credentials=credentials)
+        return Response(
+            content=json.dumps(doc, indent=2),
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{config_transfer.export_filename()}"',
+                     "Cache-Control": "no-store"},
+        )
+
+    @app.post("/api/config/import/preview")
+    async def api_config_import_preview(body: ConfigImportBody):
+        parsed = parse_import(body)
+        try:
+            chosen = config_transfer.select_sections(parsed, body.sections)
+        except config_transfer.ConfigImportError:
+            chosen = []  # e.g. a file with only the web address: nothing selected by default
+        cfg = controller.config
+        zones: set[str] | None = None
+        scheds: set[str] | None = None
+        names: dict[str, str] = {}
+        with contextlib.suppress(Exception):
+            if drv().connected:
+                zones = {z.id for z in drv().zones()}
+                names = {z.id: z.name for z in drv().zones()}
+                scheds = {s.id for s in drv().schedules()}
+        if "driver" in parsed.sections:
+            nd = config_transfer.effective_driver(cfg, parsed)
+            if (nd.kind, nd.host) != (cfg.driver.kind, cfg.driver.host):
+                zones = scheds = None  # a different Lutron system is about to be connected
+        _, adoptable = config_transfer.active_set_status(cfg, parsed, parsed.sections)
+        return {
+            "file": parsed.info(),
+            "sections": [p.to_dict() for p in config_transfer.describe_changes(cfg, parsed, parsed.sections, names)],
+            "selected": chosen,
+            "warnings": [{"section": sec, "text": text} for sec, text in
+                         config_transfer.import_warnings(cfg, parsed, parsed.sections, zones, scheds)],
+            "can_restore_active_set": adoptable,
+        }
+
+    @app.post("/api/config/import")
+    async def api_config_import(body: ConfigImportBody):
+        if not body.confirm:
+            raise HTTPException(422, "Importing replaces the chosen settings; send confirm: true after reviewing "
+                                     "the preview.")
+        parsed = parse_import(body)
+        try:
+            result = await controller.import_config(parsed, body.sections, body.restore_active_set)
+        except config_transfer.ConfigImportError as exc:
+            raise HTTPException(exc.status, str(exc)) from exc
+        hub.ensure_listener()
+        hub.broadcast({"type": "inventory_changed"})
+        return {**result.to_dict(), "status": await status_payload()}
 
     # -- driver settings ---------------------------------------------------
     @app.get("/api/settings/driver")
@@ -652,7 +740,9 @@ def create_app(controller, discover=None, updater: Updater | None = None, bind_h
             enabled=body.enabled, source=body.source, universe=body.universe,
             bind_ip=body.bind_ip.strip() or "0.0.0.0", serial_port=body.serial_port.strip(),
             max_rate_hz=body.max_rate_hz, max_commands_per_s=body.max_commands_per_s,
-            resolution_pct=body.resolution_pct, mappings=mappings,
+            resolution_pct=body.resolution_pct,
+            protect=body.protect, latency_limit_ms=body.latency_limit_ms, max_inflight=body.max_inflight,
+            mappings=mappings,
         )
         controller.save()
         warning = None
@@ -667,6 +757,18 @@ def create_app(controller, discover=None, updater: Updater | None = None, bind_h
         result["warning"] = warning
         result["status"] = await dmx_status()
         return result
+
+    @app.post("/api/dmx/pause")
+    async def api_dmx_pause(body: DmxPauseBody):
+        """The kill switch: stop (or restart) all DMX-driven writes to the Lutron system."""
+        engine = getattr(controller, "dmx", None)
+        if engine is None:
+            raise HTTPException(409, "DMX input is not running")
+        if body.paused:
+            await engine.pause()
+        else:
+            engine.resume()
+        return await dmx_status()
 
     @app.post("/api/dmx/auto-assign")
     async def api_dmx_auto_assign(body: AutoAssignBody):

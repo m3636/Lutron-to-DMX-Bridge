@@ -39,6 +39,11 @@ not 44 Hz DMX):
   when the DMX value itself changes (latest takes precedence).
 * Zones becoming ready in the same tick with the same fade go out as one
   ``driver.set_levels`` call.
+* The command budget above is a ceiling, not a promise: ``dmx.protect`` (on by
+  default) lowers it while the repeater's round-trip latency is high, caps the
+  commands written but not yet echoed, stops sending when the repeater is seconds
+  behind, and pauses the output on a DMX storm. See ``protect.py``. A paused
+  engine keeps tracking the DMX input but writes nothing to the Lutron system.
 """
 
 from __future__ import annotations
@@ -51,9 +56,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from ..config import DmxFixtureMapping
-from ..metrics import RateWindow
+from ..metrics import LinkLoad, RateWindow
 from ..models import ZoneType
 from . import DMX_SLOTS
+from .protect import REVERSAL_MIN_SWING, Protector
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..controller import Controller
@@ -181,6 +187,13 @@ class _ZoneState:
     plan_x0: float = 0.0
     plan_x1: float | None = None
     plan_fade: float = 0.0
+    # Direction-reversal tracking for storm detection (see DmxEngine._track_reversal).
+    rev_anchor: float | None = None
+    rev_dir: int = 0
+
+    # The DMX value the user cleared from the queue: it is not sent until the
+    # source changes it (see DmxEngine.clear_pending).
+    dismissed: float | None = None
 
     def light_at(self, now: float) -> float | None:
         """Where our last command should have the light at `now`."""
@@ -219,6 +232,7 @@ class DmxEngine:
         self._task: asyncio.Task | None = None
         self.warnings: list[str] = []
         self._clock = time.monotonic
+        self.protector = Protector()
 
     # -- config shortcuts ------------------------------------------------
     @property
@@ -250,9 +264,18 @@ class DmxEngine:
             top -= step
         return round(min(max(snapped, step), top), 2)
 
+    def _protecting(self) -> bool:
+        return bool(getattr(self.config, "protect", True))
+
     def _budget(self) -> float:
-        """Commands per second across all zones (0 = unlimited)."""
-        return float(getattr(self.config, "max_commands_per_s", 0) or 0)
+        """Commands per second across all zones right now (0 = unlimited).
+
+        The configured limit, scaled down by the protector while the repeater is slow.
+        """
+        configured = float(getattr(self.config, "max_commands_per_s", 0) or 0)
+        if self._protecting():
+            return self.protector.effective_rate(configured)
+        return configured
 
     def _active_mappings(self) -> list[DmxFixtureMapping]:
         return [m for m in self.config.mappings if m.enabled]
@@ -331,6 +354,7 @@ class DmxEngine:
         self.last_packet_time = time.time()
         self._last_packet_mono = now
         self._frame = frame
+        self.protector.note_frame(now)
         self._frame_times.append(now)
         while self._frame_times and now - self._frame_times[0] > FPS_WINDOW:
             self._frame_times.popleft()
@@ -344,6 +368,8 @@ class DmxEngine:
             st = self._zones.get(zone_id)
             if st is None:  # mapping added at runtime
                 st = self._zones[zone_id] = _ZoneState(sent=None)
+            if st.dismissed is not None and abs(level - st.dismissed) >= 1e-6:
+                st.dismissed = None  # the source moved on: its new value counts again
             if st.target != level:
                 if (st.target is not None and abs(level - st.target) <= RAMP_STEP
                         and now - st.target_changed_at <= RAMP_GAP):
@@ -352,16 +378,69 @@ class DmxEngine:
                     st.ramp_run = 0
                     st.run_started_at = now
                     st.run_start_level = level
+                self._track_reversal(st, level, now)
                 st.target = level
                 st.target_changed_at = now
             st.fade = fade
+
+    def _track_reversal(self, st: _ZoneState, level: float, now: float) -> None:
+        """Count a light turning around after a real swing: ramps and snaps have none, noise and strobes many."""
+        if st.rev_anchor is None:
+            st.rev_anchor = level
+            return
+        move = level - st.rev_anchor
+        if st.rev_dir == 0:
+            if abs(move) >= REVERSAL_MIN_SWING:
+                st.rev_dir, st.rev_anchor = (1 if move > 0 else -1), level
+        elif move * st.rev_dir > 0:
+            st.rev_anchor = level  # still going the same way
+        elif abs(move) >= REVERSAL_MIN_SWING:
+            st.rev_dir, st.rev_anchor = -st.rev_dir, level
+            self.protector.note_reversal(now)
+
+    # -- clearing the queue ----------------------------------------------
+    @staticmethod
+    def _dismissed(st: _ZoneState) -> bool:
+        return (st.dismissed is not None and st.target is not None
+                and abs(st.target - st.dismissed) < 1e-6)
+
+    def _is_pending(self, st: _ZoneState) -> bool:
+        """True if the zone's DMX value has not reached the Lutron system yet."""
+        if st.target is None or self._dismissed(st):
+            return False
+        return st.sent is None or abs(st.target - st.sent) >= 1e-6
+
+    def pending(self) -> int:
+        """Mapped lights whose latest DMX value is still waiting to be sent: held back by
+        the rate limits, or not yet past the small-move hold."""
+        return sum(1 for st in self._zones.values() if self._is_pending(st))
+
+    def clear_pending(self, now: float | None = None) -> dict:
+        """Forget every DMX value that is waiting to be sent.
+
+        Each pending light keeps the level it has; its current DMX value is ignored until
+        the source changes it, so a console that keeps sending the same frame does not
+        refill the queue. Commands already written to the repeater are not touched.
+        Returns the lights dropped and the lights whose last command is still fading
+        on the repeater (a fade cannot be recalled).
+        """
+        now = self._clock() if now is None else now
+        dropped = fading = 0
+        for st in self._zones.values():
+            if self._is_pending(st):
+                st.dismissed = st.target
+                dropped += 1
+            if st.plan_fade > 0 and now < st.plan_t0 + st.plan_fade:
+                fading += 1
+        self.held_back = 0
+        return {"dropped": dropped, "fading": fading}
 
     # -- sending ---------------------------------------------------------
     def _due(self, now: float) -> dict[str, tuple[float, float | None]]:
         interval = self._min_interval()
         due: dict[str, tuple[float, float | None]] = {}
         for zone_id, st in self._zones.items():
-            if st.target is None:
+            if st.target is None or self._dismissed(st):
                 continue
             if st.sent is not None:
                 if abs(self._snap(st.target) - st.sent) < 1e-6:
@@ -385,24 +464,34 @@ class DmxEngine:
             due[zone_id] = (st.target, st.fade)
         return due
 
-    def _within_budget(self, due: dict[str, tuple[float, float | None]],
-                       now: float) -> dict[str, tuple[float, float | None]]:
-        """Trim `due` to the global command budget, longest-waiting zones first."""
+    def _within_budget(self, due: dict[str, tuple[float, float | None]], now: float,
+                       headroom: int | None = None) -> dict[str, tuple[float, float | None]]:
+        """Trim `due` to the global command budget, longest-waiting zones first.
+
+        `headroom` (protection on) is how many more commands may be written before the
+        in-flight cap is reached, so even a burst cannot put more than the cap into the repeater.
+        """
         rate = self._budget()
-        if rate <= 0:
-            return due
-        cap = max(rate, float(len(self._zones)))
-        if self._tokens_at is None:
-            self._tokens = cap
-        else:
-            self._tokens = min(cap, self._tokens + max(0.0, now - self._tokens_at) * rate)
-        self._tokens_at = now
-        allowed = int(self._tokens + 1e-9)
+        allowed = len(due)
+        if rate > 0:
+            cap = max(rate, float(len(self._zones)))
+            if self._protecting() and self.protector.state != "ok":
+                cap = max(rate, 1.0)  # the repeater is struggling: no whole-house burst credit
+            if self._tokens_at is None:
+                self._tokens = cap
+            else:
+                self._tokens = min(cap, self._tokens + max(0.0, now - self._tokens_at) * rate)
+            self._tokens_at = now
+            allowed = int(self._tokens + 1e-9)
+        if headroom is not None:
+            allowed = min(allowed, headroom)
         if allowed >= len(due):
-            self._tokens -= len(due)
+            if rate > 0:
+                self._tokens -= len(due)
             return due
         oldest = sorted(due, key=lambda z: self._zones[z].last_send)[:allowed]
-        self._tokens -= len(oldest)
+        if rate > 0:
+            self._tokens -= len(oldest)
         return {z: due[z] for z in oldest}
 
     def _glide_time(self, now: float) -> float:
@@ -445,7 +534,14 @@ class DmxEngine:
         """Send every zone that is due. Returns the number of zones sent."""
         now = self._clock() if now is None else now
         driver = self.controller.driver
+        load = self._load(driver) if self._protecting() else None
+        if load is not None and self.protector.update(now, load, self.config):
+            await self._release_backlog(driver, load)  # a storm just paused the output
+        if self.protector.paused:
+            self.held_back = 0
+            return 0
         if not getattr(driver, "connected", True):
+            self.protector.link_down()
             self.held_back = 0
             return 0
         due = self._due(now)
@@ -453,7 +549,10 @@ class DmxEngine:
             self.held_back = 0
             return 0
         waiting = len(due)
-        due = self._within_budget(due, now)
+        if load is not None and not self.protector.sending_allowed:
+            self.held_back = waiting  # the repeater is seconds behind: let it catch up first
+            return 0
+        due = self._within_budget(due, now, self.protector.headroom(load, self.config) if load is not None else None)
         self.held_back = waiting - len(due)
         if log.isEnabledFor(logging.DEBUG):
             log.debug("DMX: %d zones due, %d sent now, %d held back by the %.0f/s command budget",
@@ -487,6 +586,7 @@ class DmxEngine:
                 st.plan_t0, st.plan_x1, st.plan_fade = now, level, fade or 0.0
                 st.sent = level
                 st.sent_target = due[zone_id][0]
+                st.dismissed = None
                 st.last_send = now
             self.commands_sent += len(levels)
             self.commands.add(len(levels), now)
@@ -494,6 +594,50 @@ class DmxEngine:
         if sent and self.error and self.error.startswith("Send failed"):
             self.error = None
         return sent
+
+    @staticmethod
+    def _load(driver: Any) -> LinkLoad:
+        try:
+            load = driver.load()
+        except Exception:  # a driver without the probe: assume the best
+            return LinkLoad()
+        return load if isinstance(load, LinkLoad) else LinkLoad()
+
+    # -- pause switch ----------------------------------------------------
+    @property
+    def paused(self) -> bool:
+        return self.protector.paused
+
+    async def pause(self, reason: str = "Paused by you") -> None:
+        """Stop writing to the Lutron system. The DMX input keeps being tracked."""
+        self.protector.pause(self._clock(), reason)
+        driver = self.controller.driver
+        await self._release_backlog(driver, self._load(driver))
+
+    def resume(self) -> None:
+        """Start writing again, from a low rate that ramps up while the repeater keeps up."""
+        self.protector.resume(self._clock())
+        self._tokens_at = None
+        self._wake.set()
+
+    async def _release_backlog(self, driver: Any, load: LinkLoad) -> None:
+        """Pausing: drop the level commands still waiting inside the driver and, if the repeater
+        is behind, drop the connection so what is still in the network buffers is discarded
+        rather than delivered after the pause."""
+        clear = getattr(driver, "clear_pending", None)
+        if clear is not None:
+            try:
+                await clear()
+            except Exception:
+                log.exception("Could not clear the driver's waiting commands")
+        limit = float(getattr(self.config, "latency_limit_ms", 500.0) or 500.0)
+        behind = (load.latency_ms or 0.0) > limit or load.inflight > 5
+        reset = getattr(driver, "reset_connection", None)
+        if behind and reset is not None:
+            try:
+                await reset()
+            except Exception:
+                log.exception("Could not reset the Lutron connection")
 
     async def _sender_loop(self) -> None:
         tick = min(TICK, self._min_interval() or TICK)
@@ -534,6 +678,12 @@ class DmxEngine:
             "commands_sent": self.commands_sent,
             "commands_per_s": self.commands.rate(self._clock()),
             "held_back": self.held_back,
+            "paused": self.paused,
+            "protect": {**self.protector.status(self._clock()), "enabled": self._protecting(),
+                        "latency_limit_ms": getattr(cfg, "latency_limit_ms", 500.0),
+                        "max_inflight": getattr(cfg, "max_inflight", 40)},
+
+            "pending": self.pending(),
             "max_rate_hz": cfg.max_rate_hz,
             "max_commands_per_s": cfg.max_commands_per_s,
             "resolution_pct": cfg.resolution_pct,

@@ -19,6 +19,9 @@
     "max_rate_hz": 5.0,
     "max_commands_per_s": 20.0,
     "resolution_pct": 0.5,
+    "protect": true,
+    "latency_limit_ms": 500.0,
+    "max_inflight": 40,
     "mappings": [
       {
         "zone_id": "20",

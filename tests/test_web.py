@@ -140,7 +140,7 @@ def test_status(ctx):
     assert st["driver"] == {"kind": "ra2", "host": "10.0.0.5"}
     assert st["dmx"]["enabled"] is False
     assert st["app"]["version"] and st["app"]["uptime_s"] >= 0 and st["app"]["clients"] == 0
-    assert set(st["lutron"]) >= {"connected_for_s", "commands_per_s", "echo", "inflight", "reconnect_attempts"}
+    assert set(st["lutron"]) >= {"connected_for_s", "commands_per_s", "latency", "inflight", "reconnect_attempts"}
     assert set(st["alerts"]) == {"warnings", "errors", "recent"}
 
 
@@ -451,3 +451,87 @@ def test_pair_untrusted_cert_returns_409_then_opt_in_pairs(home, monkeypatch):
         r = client.post("/api/pair/leap", json={"host": "10.0.0.5", "trust_presented_cert": True})
         assert r.status_code == 200 and r.json()["ok"]
     assert calls == [False, True]
+
+
+def test_dmx_protection_settings_round_trip_and_validate(ctx):
+    client, ctl, _ = ctx
+    body = {"enabled": False, "source": "artnet", "mappings": []}
+    d = client.get("/api/settings/dmx").json()
+    assert d["protect"] is True and d["latency_limit_ms"] == 500 and d["max_inflight"] == 40  # defaults
+    r = client.put("/api/settings/dmx", json={**body, "protect": False, "latency_limit_ms": 800, "max_inflight": 12})
+    assert r.status_code == 200, r.text
+    assert (ctl.config.dmx.protect, ctl.config.dmx.latency_limit_ms, ctl.config.dmx.max_inflight) == (False, 800, 12)
+    assert client.put("/api/settings/dmx", json={**body, "latency_limit_ms": 5}).status_code == 422
+    assert client.put("/api/settings/dmx", json={**body, "max_inflight": -1}).status_code == 422
+
+
+def test_dmx_pause_endpoint_needs_a_running_engine_and_toggles_it(ctx):
+    client, ctl, _ = ctx
+    assert client.post("/api/dmx/pause", json={"paused": True}).status_code == 409  # DMX is off
+    # port 6454 may be taken on the machine running the tests: use a stub receiver
+    from lutron_to_dmx_bridge.dmx.engine import DmxEngine
+
+    class Stub:
+        async def start(self): ...
+        async def stop(self): ...
+
+    async def start_engine():
+        ctl.config.dmx.enabled = True
+        ctl.dmx = DmxEngine(ctl, receiver_factory=lambda e: Stub())
+        await ctl.dmx.start()
+
+    client.portal.call(start_engine)  # on the loop the app runs on
+    r = client.post("/api/dmx/pause", json={"paused": True})
+    assert r.status_code == 200 and r.json()["paused"] is True
+    assert r.json()["protect"]["state"] == "paused" and r.json()["protect"]["reason"]
+    st = client.get("/api/status").json()["dmx"]
+    assert st["paused"] is True and st["protect"]["enabled"] is True
+    r = client.post("/api/dmx/pause", json={"paused": False})
+    assert r.json()["paused"] is False and r.json()["protect"]["state"] in ("ok", "backoff")
+    assert client.post("/api/dmx/pause", json={}).status_code == 422
+    client.portal.call(ctl.dmx.stop)
+
+def test_status_reports_the_queue(ctx):
+    client, _, _ = ctx
+    assert client.get("/api/status").json()["queue"] == {
+        "dmx_pending": 0, "driver_queued": 0, "waiting": 0, "inflight": 0}
+
+
+def test_clear_queue_endpoint(ctx):
+    client, _, _ = ctx
+    r = client.post("/api/queue/clear")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True and body["dropped"] == 0 and body["fading"] == 0
+    assert body["status"]["queue"]["waiting"] == 0
+
+
+def test_clear_queue_drops_waiting_dmx_values_and_driver_commands(ctx):
+    client, ctl, driver = ctx
+
+    class FakeEngine:
+        cleared = False
+
+        def pending(self):
+            return 0 if self.cleared else 4
+
+        def clear_pending(self):
+            self.cleared = True
+            return {"dropped": 4, "fading": 2}
+
+    async def clear_pending():
+        return 3
+
+    ctl.dmx = FakeEngine()
+    driver.queued = lambda: 3
+    driver.clear_pending = clear_pending
+    assert client.get("/api/status").json()["queue"]["waiting"] == 7
+    body = client.post("/api/queue/clear").json()
+    assert (body["dmx_dropped"], body["driver_dropped"], body["dropped"], body["fading"]) == (4, 3, 7, 2)
+    ctl.dmx = None
+
+
+def test_clear_queue_button_is_in_the_page_and_script(ctx):
+    client, _, _ = ctx
+    assert 'id="btn-queue-clear"' in client.get("/").text
+    assert "queue/clear" in client.get("/static/app.js").text

@@ -39,13 +39,13 @@
   };
 
   let toastTimer = null;
-  function toast(msg, bad) {
+  function toast(msg, bad, ms) {
     const t = $("#toast");
     t.textContent = msg;
     t.classList.toggle("bad", !!bad);
     t.classList.remove("hidden");
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => t.classList.add("hidden"), bad ? 6000 : 2500);
+    toastTimer = setTimeout(() => t.classList.add("hidden"), ms || (bad ? 6000 : 2500));
   }
 
   async function api(method, path, body) {
@@ -112,7 +112,7 @@
     wsFailed: false,         // the websocket closed at least once
     msgAt: 0,                // when the last websocket message arrived
     statusAt: 0,             // when the last status arrived (websocket or polling)
-    hist: { fps: [], cps: [], echo: [] },  // [ms timestamp, value|null] pairs, last HISTORY_S seconds
+    hist: { fps: [], cps: [], latency: [] },  // [ms timestamp, value|null] pairs, last HISTORY_S seconds (latency comes from the app)
     pop: false,              // status popover open
     tab: "devices",
   };
@@ -134,10 +134,11 @@
 
   // ---------------------------------------------------------------- status
   const KIND_NAMES = { simulator: "Simulator", ra2: "RadioRA 2", leap: "LEAP" };
-  const SLOW_ECHO_MS = 500;      // p95 echo latency above this turns the Lutron chip amber
+  const SLOW_LUTRON_MS = 500;    // p95 round-trip latency above this turns the Lutron chip amber
   const STALE_DMX_S = 2;         // no DMX packet for this long turns the DMX chip amber
   const STALE_MSG_MS = 4000;     // the app pushes status every second; this many ms of silence is "stale"
   const HISTORY_S = 120;
+  const LATENCY_GAP_MS = 8000;   // latency samples further apart than this are drawn as separate lines
 
   function fmtDur(s) {
     s = Math.max(0, Math.round(s));
@@ -166,24 +167,37 @@
     return { cls: "bad", value: "offline", title: "Cannot reach the app. Is it still running? Retrying." };
   }
 
+  const PROTECT_TEXT = {
+    ok: { chip: "Full speed", row: "Full speed" },
+    backoff: { chip: "Slowed down: the Lutron repeater is behind", row: "Slowed down because the repeater is behind" },
+    hold: { chip: "Held: the repeater is seconds behind", row: "Holding commands until the repeater catches up" },
+    paused: { chip: "Paused by you", row: "Paused by you" },
+    tripped: { chip: "Paused automatically", row: "Paused automatically" },
+  };
+
   /** Everything the chips, popover and Status tab show, derived from one status payload. */
   function statusModel(st) {
-    const L = st.lutron || {}, echo = L.echo || {}, D = st.dmx || {}, rx = D.receiver || {};
+    const L = st.lutron || {}, lat = L.latency || {}, D = st.dmx || {}, rx = D.receiver || {};
     const A = st.alerts || { warnings: 0, errors: 0, recent: [] }, app = st.app || {};
     const d = st.driver || {};
     const srv = serverModel();
     const rate = Math.round(L.commands_per_s || 0);
-    const budget = D.enabled ? Number(D.max_commands_per_s) || 0 : 0;
+    const Pr = D.protect || {};
+    const protectOn = !!(D.enabled && Pr.enabled);
+    const cfgBudget = D.enabled ? Number(D.max_commands_per_s) || 0 : 0;
+    // with protection on, the limit shown is what the app allows right now
+    const budget = protectOn && Pr.rate ? (cfgBudget ? Math.min(cfgBudget, Math.round(Pr.rate)) : Math.round(Pr.rate)) : cfgBudget;
     const held = D.held_back || 0;
+    const Q = st.queue || {}, waiting = Q.waiting || 0;
     const reconnecting = !st.connected && (L.reconnect_attempts || 0) > 0;
     const m = { chips: {}, sections: [], alerts: A, app, srv };
 
     // Lutron
     {
-      let cls = "ok", value = echo.count ? echo.median + " ms" : "connected";
-      let title = "Connected to the Lutron system" + (echo.count ? ". Median echo latency over the last minute." : ". No commands in the last minute.");
+      let cls = "ok", value = lat.count ? lat.median + " ms" : "connected";
+      let title = "Connected to the Lutron system" + (lat.count ? ". Median round-trip latency over the last minute." : ". No latency measured yet.");
       if (!st.connected) { cls = "bad"; value = "offline"; title = reconnecting ? "Reconnecting to the Lutron system" : "Not connected to the Lutron system"; }
-      else if (echo.p95 >= SLOW_ECHO_MS) { cls = "warn"; title = "The repeater is slow to answer (95th percentile " + echo.p95 + " ms)"; }
+      else if (lat.p95 >= SLOW_LUTRON_MS) { cls = "warn"; title = "The repeater is slow to answer (95th percentile " + lat.p95 + " ms)"; }
       m.chips.lutron = { cls, value, title };
       const rows = [
         ["State", st.connected ? "Connected" : reconnecting
@@ -193,9 +207,9 @@
       ];
       if (st.connected && L.connected_for_s != null) rows.push(["Connected for", fmtDur(L.connected_for_s)]);
       if (L.reconnects) rows.push(["Reconnects since start", String(L.reconnects), "warn"]);
-      rows.push(["Echo latency",
-        echo.count ? fmtMs(echo.last) + " (median " + fmtMs(echo.median) + ", p95 " + fmtMs(echo.p95) + ")" : "no replies in the last minute",
-        echo.p95 >= SLOW_ECHO_MS ? "warn" : ""]);
+      rows.push(["Lutron latency",
+        lat.count ? fmtMs(lat.last) + " (median " + fmtMs(lat.median) + ", p95 " + fmtMs(lat.p95) + ")" : "no replies in the last minute",
+        lat.p95 >= SLOW_LUTRON_MS ? "warn" : ""]);
       rows.push(["Commands in flight", String(L.inflight || 0), (L.inflight || 0) > 10 ? "warn" : ""]);
       m.sections.push({ id: "lutron", title: "Lutron link", cls, rows });
     }
@@ -237,14 +251,25 @@
       let cls = held > 0 || (L.inflight || 0) > 10 ? "warn" : "ok";
       let title = "Commands sent to the Lutron system per second" + (budget ? ", against the limit set on the DMX tab" : "");
       if (held > 0) title += ". " + plural(held, "light") + " waiting for the limit.";
+      let value = budget ? rate + "/" + budget + " cmd/s" : rate + " cmd/s";
+      const prot = PROTECT_TEXT[Pr.state];
+      if (protectOn && (Pr.state === "backoff" || Pr.state === "hold")) { cls = "warn"; title = prot.chip + ". " + title; }
+      if (D.paused) { cls = "bad"; value = "paused"; title = Pr.reason || "DMX output is paused"; }
       if (!st.connected) cls = "off";
-      m.chips.out = { cls, value: budget ? rate + "/" + budget + " cmd/s" : rate + " cmd/s", title,
-        pct: budget ? Math.min(100, (rate / budget) * 100) : null, held };
-      m.sections.push({ id: "out", title: "Output to Lutron", cls, rows: [
+      m.chips.out = { cls, value, title, pct: budget && !D.paused ? Math.min(100, (rate / budget) * 100) : null, held };
+      const rows = [
         ["Commands/s", rate + (budget ? " of " + budget + " allowed" : ""), held > 0 ? "warn" : ""],
         ["Held back by the limit", held ? plural(held, "light") : "none", held ? "warn" : ""],
+        ["Waiting in the app", waiting ? plural(waiting, "update") : "none", waiting ? "warn" : ""],
         ["Sent since start", Number(L.commands_total || 0).toLocaleString()],
-      ] });
+      ];
+      if (D.enabled) {
+        const text = prot ? prot.row : "";  // the banner carries the reason
+        if (!protectOn && !D.paused) rows.push(["Repeater protection", "Off (DMX tab)", "warn"]);
+        else if (text) rows.push(["Repeater protection", text, Pr.state === "ok" ? "ok" : Pr.state === "backoff" || Pr.state === "hold" ? "warn" : "bad"]);
+        if (protectOn && Pr.slowdowns) rows.push(["Slowed down since start", plural(Pr.slowdowns, "time"), "warn"]);
+      }
+      m.sections.push({ id: "out", title: "Output to Lutron", cls, rows });
     }
 
     // Alerts
@@ -299,12 +324,43 @@
     $("#driver-label").textContent = (KIND_NAMES[d.kind] || d.kind || "") + (d.host ? " · " + d.host : "") +
       (st.connected ? " · connected" : " · not connected");
     renderSetBanner(st.schedule_set);
+    renderProtect(st.dmx);
     renderUpdate(st.update);
     const banner = $("#error-banner");
     if (st.last_error) { banner.textContent = st.last_error; banner.classList.remove("hidden"); }
     else banner.classList.add("hidden");
     pushHistory(st);
     renderStatusArea();
+  }
+
+  /** The pause switch in the header, and the banner shown while DMX output is paused. */
+  function renderProtect(D) {
+    D = D || {};
+    const Pr = D.protect || {}, live = !!D.running, btn = $("#btn-dmx-pause"), bn = $("#protect-banner");
+    btn.classList.toggle("hidden", !live);
+    btn.textContent = D.paused ? "Resume DMX" : "Pause DMX";
+    btn.classList.toggle("danger", !D.paused);
+    btn.classList.toggle("primary", !!D.paused);
+    bn.classList.toggle("hidden", !(live && D.paused));
+    bn.classList.toggle("alert", !!Pr.auto);
+    if (live && D.paused) {
+      const text = $("#protect-banner-text");
+      clear(text);
+      text.appendChild(document.createTextNode(Pr.auto ? "DMX output was paused automatically: " + (Pr.reason || "storm detected")
+        : "DMX output is paused. Nothing from the DMX input reaches the lights."));
+      text.appendChild(h("small", { text: Pr.auto
+        ? "The lights keep their last levels. The Lutron repeater may still be working through commands it had already accepted: give it a minute, look at the latency on the Status tab, make sure the source is calm, then resume."
+        : "The input is still tracked. When you resume, the lights catch up to the current DMX values, starting slowly." }));
+    }
+  }
+
+  async function toggleDmxPause() {
+    const paused = !!(state.status && state.status.dmx && state.status.dmx.paused);
+    try {
+      await api("POST", "dmx/pause", { paused: !paused });
+      toast(paused ? "DMX resumed" : "DMX paused");
+      await loadStatus();
+    } catch (e) { toast(e.message, true); }
   }
 
   /** Repaint the header chips and, when visible, the popover and Status tab. */
@@ -325,7 +381,7 @@
     const now = Date.now();
     if (now - (state.histAt || 0) < 700) return;  // a manual refresh next to a push must not double up
     state.histAt = now;
-    const L = st.lutron || {}, e = L.echo || {}, D = st.dmx || {};
+    const L = st.lutron || {}, D = st.dmx || {};
     const add = (k, v) => {
       const a = state.hist[k];
       a.push([now, v]);
@@ -333,7 +389,9 @@
     };
     add("fps", D.running ? D.fps || 0 : null);
     add("cps", st.connected ? L.commands_per_s || 0 : null);
-    add("echo", e.age_s !== null && e.age_s !== undefined && e.age_s <= 2 ? e.last : null);  // gaps while idle
+    // Round-trip samples are timed by the app (one every couple of seconds, busy or idle), so take its
+    // history as it is instead of sampling the latest value once a second.
+    state.hist.latency = ((L.latency || {}).history || []).map(([age, ms]) => [now - age * 1000, ms]);
   }
 
   function dlRows(rows) {
@@ -377,7 +435,7 @@
   }
 
   /** One sparkline: samples are [ms, value|null]; x is time over the last HISTORY_S seconds, y is 0..max. */
-  function sparkSvg(samples, max, color, limit) {
+  function sparkSvg(samples, max, color, limit, gap) {
     const W = 300, H = 72, padT = 6, padB = 4, now = Date.now(), span = HISTORY_S * 1000;
     const X = (t) => ((t - (now - span)) / span) * W;
     const Y = (v) => padT + (1 - Math.min(v, max) / max) * (H - padT - padB);
@@ -394,7 +452,7 @@
     let prev = null, cur = null;
     for (const [t, v] of samples) {
       if (v === null || v === undefined) { prev = null; cur = null; continue; }
-      if (prev === null || t - prev > 3000) { cur = []; segs.push(cur); }
+      if (prev === null || t - prev > (gap || 3000)) { cur = []; segs.push(cur); }
       cur.push([X(t), Y(v)]);
       prev = t;
     }
@@ -407,7 +465,7 @@
       svg += '<path d="M' + pts.join(" L") + '" fill="none" style="stroke:' + color + '" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>';
     }
     const lastSample = samples[samples.length - 1];
-    if (lastSample && lastSample[1] !== null && lastSample[1] !== undefined && now - lastSample[0] <= 3000) {
+    if (lastSample && lastSample[1] !== null && lastSample[1] !== undefined && now - lastSample[0] <= (gap || 3000)) {
       svg += '<circle cx="' + X(lastSample[0]).toFixed(1) + '" cy="' + Y(lastSample[1]).toFixed(1) + '" r="3.2" style="fill:' + color + '"/>';
     }
     const holder = h("div");
@@ -415,8 +473,8 @@
     return holder.firstChild;
   }
 
-  function graphCard(title, big, unit, samples, max, color, maxUnit, limit) {
-    const svg = sparkSvg(samples, max, color, limit);
+  function graphCard(title, big, unit, samples, max, color, maxUnit, limit, gap) {
+    const svg = sparkSvg(samples, max, color, limit, gap);
     svg.setAttribute("aria-label", title + " over the last 2 minutes");
     return h("div", { class: "card" }, h("h3", { text: title }),
       h("div", { class: "big" }, big, h("small", { text: unit })), svg,
@@ -426,7 +484,7 @@
   function renderStatusTab(m) {
     if (!state.status) return;
     m = m || statusModel(state.status);
-    const st = state.status, L = st.lutron || {}, e = L.echo || {}, D = st.dmx || {};
+    const st = state.status, L = st.lutron || {}, lat = L.latency || {}, D = st.dmx || {};
     const budget = D.enabled ? Number(D.max_commands_per_s) || 0 : 0;
 
     const secs = $("#status-sections");
@@ -442,8 +500,9 @@
       state.hist.fps, niceMax(peak("fps"), 50), "var(--dmx)", "frames/s"));
     g.appendChild(graphCard("Commands to Lutron", String(Math.round(L.commands_per_s || 0)), budget ? "cmd/s, limit " + budget : "cmd/s",
       state.hist.cps, niceMax(Math.max(peak("cps"), budget * 1.25), 10), "var(--accent)", "cmd/s", budget || null));
-    g.appendChild(graphCard("Echo latency", e.last === null || e.last === undefined ? "-" : String(e.last), "ms" + (e.count ? " · median " + e.median + ", p95 " + e.p95 : ""),
-      state.hist.echo, niceMax(peak("echo"), 200), "var(--ok)", "ms"));
+    // the app times a round trip to the Lutron system every couple of seconds; a few missed ones still join up
+    g.appendChild(graphCard("Lutron latency", lat.last === null || lat.last === undefined ? "-" : String(lat.last), "ms" + (lat.count ? " · median " + lat.median + ", p95 " + lat.p95 : ""),
+      state.hist.latency, niceMax(peak("latency"), 200), "var(--ok)", "ms", SLOW_LUTRON_MS, LATENCY_GAP_MS));
 
     const A = m.alerts, list = $("#status-log");
     clear(list);
@@ -454,6 +513,28 @@
     $("#status-log-empty").classList.toggle("hidden", (A.recent || []).length > 0);
     $("#status-log-dot").className = "dot " + (A.errors ? "bad" : A.warnings ? "warn" : "ok");
     $("#btn-alerts-clear").disabled = !(A.errors || A.warnings);
+    const waiting = (st.queue || {}).waiting || 0;
+    $("#btn-queue-clear").textContent = waiting ? "Clear Lutron queue (" + waiting + ")" : "Clear Lutron queue";
+    $("#btn-queue-clear").disabled = !st.connected;
+  }
+
+  /** Say what a clear did and, as important, what it could not undo. */
+  function queueClearMessage(r) {
+    const parts = [r.dropped ? "Dropped " + plural(r.dropped, "waiting update") + "." : "Nothing was waiting in the app."];
+    if (r.inflight) parts.push(plural(r.inflight, "command") + " already sent to the repeater can't be recalled.");
+    if (r.fading) parts.push(plural(r.fading, "light") + " will finish the fade already started.");
+    return parts.join(" ");
+  }
+
+  async function clearQueue() {
+    const btn = $("#btn-queue-clear");
+    btn.disabled = true;
+    try {
+      const r = await api("POST", "queue/clear");
+      toast(queueClearMessage(r), false, 7000);
+      if (r.status) renderStatus(r.status); else await loadStatus();
+    } catch (e) { toast(e.message, true); }
+    finally { btn.disabled = !(state.status && state.status.connected); }
   }
 
   async function clearAlerts() {
@@ -1094,6 +1175,9 @@
     $("#dmx-rate").value = d.max_rate_hz;
     $("#dmx-total-rate").value = d.max_commands_per_s ?? 20;
     $("#dmx-resolution").value = d.resolution_pct ?? 0.5;
+    $("#dmx-protect").checked = d.protect !== false;
+    $("#dmx-latency-limit").value = d.latency_limit_ms ?? 500;
+    $("#dmx-max-inflight").value = d.max_inflight ?? 40;
     updateSourceVisibility();
     renderMappings();
   }
@@ -1214,6 +1298,9 @@
       max_rate_hz: Number($("#dmx-rate").value) || 5,
       max_commands_per_s: Math.max(0, Number($("#dmx-total-rate").value) || 0),
       resolution_pct: Math.min(25, Math.max(0.1, Number($("#dmx-resolution").value) || 0.5)),
+      protect: $("#dmx-protect").checked,
+      latency_limit_ms: Math.min(10000, Math.max(50, Number($("#dmx-latency-limit").value) || 500)),
+      max_inflight: Math.max(0, Math.round(Number($("#dmx-max-inflight").value) || 0)),
       mappings: d.mappings.map((m) => ({ zone_id: m.zone_id, address: Number(m.address), params: m.params, enabled: !!m.enabled })),
     };
     if (body.source === "usb" && body.enabled && !body.serial_port) { toast("Choose a serial port for the USB adapter", true); return; }
@@ -1508,6 +1595,111 @@
     } catch (e) { toast(e.message, true); }
   }
 
+  // ---------------------------------------------------------------- export / import of settings
+  const xfer = { doc: null, preview: null, fileName: "" };
+
+  function updateExportLink() {
+    const creds = $("#xfer-creds").checked;
+    $("#btn-export").setAttribute("href", "api/config/export" + (creds ? "?credentials=true" : ""));
+    $("#xfer-creds-warn").classList.toggle("hidden", !creds);
+  }
+
+  function closeImportPanel() {
+    xfer.doc = xfer.preview = null;
+    const p = $("#import-panel");
+    clear(p);
+    p.classList.add("hidden");
+  }
+
+  function showImportMessage(kind, title, lines) {
+    const p = $("#import-panel");
+    clear(p);
+    p.classList.remove("hidden");
+    p.appendChild(h("div", { class: "xfer-note " + kind, role: kind === "bad" ? "alert" : "status" },
+      h("b", { text: title }), ...lines.map((l) => h("div", { text: l }))));
+    p.appendChild(h("div", { class: "toolbar" }, h("button", { class: "btn", onclick: closeImportPanel, text: "Close" })));
+  }
+
+  async function pickImportFile(ev) {
+    const file = ev.target.files && ev.target.files[0];
+    ev.target.value = ""; // so choosing the same file again works
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) { showImportMessage("bad", "That file is too big to be a settings export.", []); return; }
+    let doc;
+    try { doc = JSON.parse(await file.text()); }
+    catch (e) { showImportMessage("bad", "Cannot read " + file.name, ["It is not valid JSON."]); return; }
+    try {
+      xfer.preview = await api("POST", "config/import/preview", { document: doc });
+      xfer.doc = doc;
+      xfer.fileName = file.name;
+      renderImportPanel();
+    } catch (e) { showImportMessage("bad", "Cannot import " + file.name, [e.message]); }
+  }
+
+  function renderImportPanel() {
+    const pv = xfer.preview, f = pv.file;
+    const p = $("#import-panel");
+    clear(p);
+    p.classList.remove("hidden");
+    const when = f.created ? " on " + new Date(f.created).toLocaleString() : "";
+    p.appendChild(h("h4", { text: "Import " + xfer.fileName }));
+    p.appendChild(h("p", { class: "hint", text:
+      "Made by app version " + (f.app_version || "unknown") + when + ". Integration login, update token and pairing certificates: " +
+      (f.includes_credentials ? "included in the file." : "not in the file (the ones this app has now are kept).") }));
+    pv.warnings.filter((w) => !w.section).forEach((w) => p.appendChild(h("div", { class: "xfer-note warn", text: w.text })));
+
+    const boxes = [];
+    const importBtn = h("button", { class: "btn primary", text: "Import selected" });
+    const refresh = () => {
+      boxes.forEach(({ box, row }) => row.classList.toggle("off", !box.checked));
+      importBtn.disabled = !boxes.some(({ box }) => box.checked);
+    };
+    pv.sections.forEach((s) => {
+      const box = h("input", { type: "checkbox", dataset: { section: s.id }, checked: pv.selected.includes(s.id) && !s.blocked, disabled: !!s.blocked, onchange: refresh });
+      const row = h("div", { class: "import-sec" },
+        h("label", { class: "check" }, box, h("b", { text: s.label }), h("span", { class: "muted", text: s.changed ? "" : "no changes" })));
+      const items = [...s.changes.map((c) => h("li", { text: c })),
+        ...pv.warnings.filter((w) => w.section === s.id).map((w) => h("li", { class: "warn", text: w.text }))];
+      if (items.length) row.appendChild(h("ul", null, ...items));
+      if (s.blocked) row.appendChild(h("div", { class: "blocked", text: s.blocked }));
+      boxes.push({ box, row });
+      p.appendChild(row);
+    });
+
+    let restoreBox = null;
+    if (pv.can_restore_active_set) {
+      restoreBox = h("input", { type: "checkbox", id: "import-restore-active" });
+      p.appendChild(h("div", { class: "import-sec" }, h("label", { class: "check" }, restoreBox,
+        h("span", { text: "Also bring back the saved schedule states of “" + f.active_set + "”, which was active when the file was made" }))));
+    }
+    p.appendChild(h("p", { class: "hint", text:
+      "Each ticked section is replaced as a whole: anything in it that is not in the file is removed. The current settings are saved to the app’s backups folder first, and that file can be imported to undo this. Changing the Lutron connection reconnects the app." }));
+    importBtn.addEventListener("click", () => runImport(importBtn, restoreBox));
+    p.appendChild(h("div", { class: "toolbar" }, importBtn, h("button", { class: "btn ghost", onclick: closeImportPanel, text: "Cancel" })));
+    refresh();
+  }
+
+  async function runImport(btn, restoreBox) {
+    const sections = $$("#import-panel input[data-section]").filter((i) => i.checked).map((i) => i.dataset.section);
+    if (!sections.length) return;
+    btn.disabled = true;
+    try {
+      const res = await api("POST", "config/import", {
+        document: xfer.doc, sections, restore_active_set: !!(restoreBox && restoreBox.checked), confirm: true });
+      const names = new Map(xfer.preview.sections.map((s) => [s.id, s.label]));
+      const lines = ["Imported: " + res.applied.map((s) => names.get(s) || s).join(", ") + ".",
+        "The previous settings were saved to " + res.backup + " (import that file to undo this).", ...res.warnings];
+      if (res.restart_required) lines.push("The web address or port changes the next time the app starts.");
+      showImportMessage("ok", "Settings imported", lines);
+      xfer.doc = xfer.preview = null;
+      state.dmx = null; // the DMX tab re-reads its settings
+      loadDriverSettings(); loadUpdateSettings(); renderUpdateFacts(); loadInventory(); loadDmxMapped(); loadStatus();
+    } catch (e) {
+      btn.disabled = false;
+      toast(e.message, true);
+    }
+  }
+
   async function checkUpdateNow() {
     const btn = $("#btn-update-check"), st = $("#update-check-state");
     btn.disabled = true; st.textContent = "Asking GitHub…";
@@ -1561,6 +1753,7 @@
 
     $$("#status-chips .chip").forEach((c) => c.addEventListener("click", togglePop));
     $("#btn-alerts-clear").addEventListener("click", clearAlerts);
+    $("#btn-queue-clear").addEventListener("click", clearQueue);
     document.addEventListener("click", (e) => { if (state.pop && !e.target.closest("#status-pop, #status-chips")) closePop(); });
     document.addEventListener("keydown", (e) => { if (e.key === "Escape") closePop(true); });
     trackTopbarHeight();
@@ -1579,6 +1772,8 @@
     $("#btn-set-close").addEventListener("click", closeSetEditor);
     $("#btn-set-save").addEventListener("click", saveSet);
     $("#btn-set-restore").addEventListener("click", restoreSet);
+    $("#btn-dmx-pause").addEventListener("click", toggleDmxPause);
+    $("#btn-protect-resume").addEventListener("click", toggleDmxPause);
     $("#btn-set-details").addEventListener("click", () => showTab("schedules"));
 
     $("#dmx-source").addEventListener("change", updateSourceVisibility);
@@ -1594,6 +1789,8 @@
     $("#btn-update-dismiss").addEventListener("click", dismissUpdate);
     $("#btn-update-check").addEventListener("click", checkUpdateNow);
     $("#btn-upd-save").addEventListener("click", saveUpdateSettings);
+    $("#xfer-creds").addEventListener("change", updateExportLink);
+    $("#import-file").addEventListener("change", pickImportFile);
     $("#upd-token").addEventListener("focus", (e) => { if (e.target.value === "********") e.target.select(); });
     $("#btn-pair").addEventListener("click", () => pairLeap());
     $("#btn-discover").addEventListener("click", discoverControllers);
