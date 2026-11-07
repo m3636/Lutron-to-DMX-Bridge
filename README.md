@@ -12,6 +12,7 @@ Local-only control of a Lutron **RadioRA 2** (Main Repeater) or **RA3 / RA2 Sele
 - DMX input: Art-Net, sACN, or a USB DMX adapter that can *receive*. Each light is mapped to a start address and its parameters (intensity, on/off, fade) take sequential channels.
 - Status area: five chips in the header (Lutron, DMX in, Output, Alerts, Server) show health at a glance, click one for the details, or open the **Status** tab for the same numbers plus 2-minute graphs. See [Reading the status area](#reading-the-status-area).
 - JSON backup of everything the system lets us read.
+- Export and import of this app's own settings (Lutron connection, DMX mapping, scenes, schedule sets) as one versioned file, to move to another computer or recover after the settings were lost. See [Export and import settings](#export-and-import-settings).
 
 ## Setting up on a Mac (step-by-step guide)
 
@@ -80,6 +81,7 @@ You will not need to do Part 3 again. The app remembers your settings, even afte
 - **Scenes:** make your own looks (for example "Dinner"). Set the lights how you like them and click **Snapshot all lights**, or click **New scene** to pick lights and levels yourself. Later, click **Activate** to set every light in the scene at once. These scenes belong to this app. They are not Lutron's own scenes, and they do not change anything inside the Lutron system.
 - **Schedules:** see the timed events in the Lutron system and turn them off or back on. Nothing is ever deleted.
 - **DMX:** connects your lighting console. Ask whoever set up the DMX side before changing anything here.
+- **Settings → Export & import settings:** saves everything the app needs to be rebuilt into one file, and restores it later. See [Export and import settings](#export-and-import-settings).
 - **Status:** shows whether everything is healthy. The small coloured chips at the top right turn amber or red when something needs attention.
 - **Quit the app:** close the small log window, or click **Quit** in it. The control page in your browser stops working when the app is closed. To keep it running, **minimise** the log window (the yellow button) instead of closing it.
 - **Updates:** a blue bar appears at the top of the page when a newer version is out. Click **Update now** when it suits you. Your settings and scenes are kept.
@@ -143,6 +145,27 @@ Once a LEAP processor is paired its Bonjour name is remembered, so if the router
 Things that stop discovery: the computer is on a different network/VLAN than the controller, the router filters multicast/mDNS (Lutron asks for Bonjour/mDNS to be allowed and IGMP snooping off), the Windows Firewall prompt for Python was denied, or on macOS 15+ Local Network access is off for the app (System Settings → Privacy & Security → Local Network). Running from Terminal is exempt on macOS. You can always type the IP in by hand; give the controller a DHCP reservation so it stays put.
 
 Backup: `lutron-to-dmx-bridge backup` or the Settings tab. On RadioRA 2 this is a reference snapshot; the RA2 programming software project file is the real recovery source. **A backup contains the controller's full project export, including the installer's name and contact details. Keep it private and never attach it to an issue.**
+
+## Export and import settings
+
+The Lutron backup above saves what the *Lutron system* knows. This is different: it saves **this app's own settings** so you can rebuild the app on a fresh install, move it to another computer, or recover after `config.json` was lost. One JSON file holds:
+
+- the Lutron connection (system type, address, port, mDNS name, integration report path, certificate folder path),
+- the DMX input settings and the address mapping,
+- your custom scenes,
+- the schedule sets (such as "Performance mode"), and the saved prior schedule states of a set that was active at the time,
+- the update-check preference, and the web GUI address and port.
+
+**In the web GUI:** Settings → *Export & import settings*. **From the command line:** `lutron-to-dmx-bridge export-config [FILE]` and `lutron-to-dmx-bridge import-config FILE`. **Over the API:** `GET /api/config/export`, `POST /api/config/import/preview` and `POST /api/config/import`.
+
+**Credentials are opt-in.** By default the file does **not** contain the RadioRA 2 integration login, the GitHub update token or the LEAP pairing keys, and importing such a file keeps whatever the app already has. Tick *Include the Lutron integration login, update token and pairing certificates* (CLI: `--include-credentials`) to put them in, so a brand-new install can reconnect without pairing again. A file made that way holds passwords and private keys in plain text: keep it private, never post or attach it anywhere, and delete it when you are done. The app writes the files it creates itself (CLI export, the automatic pre-import backup) readable by your user only.
+
+**Importing** shows what would change first, section by section, with warnings (for example scenes that use lights the connected Lutron system does not have). You choose which sections to import. A ticked section is replaced as a whole, so lights, scenes or mappings that are not in the file are removed from that section. Before anything is changed the current settings are saved, credentials included, to `backups/config-before-import-<time>.json` in the app's data folder, and importing that file undoes the import. The web GUI and the Lutron connection are reconnected automatically; with the command line, stop the app first (it refuses to import while the app seems to be running, because the running app would overwrite the result).
+
+- The web address and port are **not** selected by default, because they decide who on the network can reach the app. Tick them yourself, or pass `--sections` on the command line.
+- A schedule set cannot be replaced while a set that the file does not contain is active: restore the schedules first (Schedules tab), or leave that section out. If the file was made while a set was active you can also bring back its saved schedule states, but only when no set is active now.
+- Paths such as the integration report and the certificate folder are specific to a computer. Import warns when one does not exist on this computer.
+- **Versions:** the file records a format number (`schema_version`) and the app version that wrote it. A file from a *newer* format is refused with a message to update the app; an older format is upgraded automatically; a file from a newer app version with the same format is accepted with a warning, and settings the running version does not know are ignored. The older Lutron system backup file (`Download backup`) can also be imported; only its app settings are used, never its (masked) password.
 
 ## DMX hardware
 - **Network (recommended):** a node such as the PKnight CR021R turns a physical DMX input into Art-Net/sACN. Point the app at that universe.

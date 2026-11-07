@@ -24,6 +24,11 @@ log = logging.getLogger(__name__)
 #: The old folder is moved to the new name the first time the app starts (see :func:`data_dir`).
 LEGACY_HOME_ENV = "LUTRON_DMX_HOME"
 
+#: Values the settings accept; shared by the web API and the config import so both enforce the same rules.
+DRIVER_KINDS = ("simulator", "ra2", "leap")
+DMX_SOURCES = ("artnet", "sacn", "usb")
+DMX_PARAMS = ("intensity", "on_off")
+
 
 def _default_dir(name_win_mac: str, name_other: str) -> Path:
     if sys.platform == "win32":

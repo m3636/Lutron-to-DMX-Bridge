@@ -97,6 +97,21 @@ class Controller:
     def save(self) -> None:
         self.config.save()
 
+    async def import_config(self, parsed, sections: list[str] | None = None, restore_active_set: bool = False):
+        """Replace settings from a parsed export (see ``config_transfer``) and apply them to the running app."""
+        from .config_transfer import import_into_config
+
+        result = import_into_config(self.config, parsed, sections, restore_active_set)
+        if result.driver_changed:
+            await self.reconfigure_driver(self.config.driver)
+        if result.dmx_changed or result.driver_changed:
+            try:
+                await self.restart_dmx()
+            except Exception as exc:  # the settings are saved either way
+                log.exception("DMX restart after import failed")
+                result.warnings.append(f"DMX restart failed: {exc}")
+        return result
+
     # -- direct control --------------------------------------------------
     async def set_level(self, zone_id: str, level: float, fade: float | None = None) -> None:
         level = max(0.0, min(100.0, float(level)))
