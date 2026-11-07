@@ -97,6 +97,8 @@ a { color: var(--accent-2); }
   border-radius: var(--radius); background: #3a2b0c; border: 1px solid var(--accent); color: var(--accent-2);
   box-shadow: 0 0 14px rgba(245, 165, 36, .25);
 }
+.set-banner.alert { background: #3a1d1d; border-color: var(--bad); color: #ffd7d7; box-shadow: 0 0 14px rgba(229, 72, 77, .3); }
+.status-pills .btn { padding: 4px 12px; font-size: .85rem; }
 .set-banner-text { flex: 1; min-width: 200px; font-weight: 600; overflow-wrap: anywhere; }
 .set-banner-text small { display: block; font-weight: 400; color: var(--text); opacity: .8; }
 

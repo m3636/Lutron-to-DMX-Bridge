@@ -167,6 +167,14 @@
     return { cls: "bad", value: "offline", title: "Cannot reach the app. Is it still running? Retrying." };
   }
 
+  const PROTECT_TEXT = {
+    ok: { chip: "Full speed", row: "Full speed" },
+    backoff: { chip: "Slowed down: the Lutron repeater is behind", row: "Slowed down because the repeater is behind" },
+    hold: { chip: "Held: the repeater is seconds behind", row: "Holding commands until the repeater catches up" },
+    paused: { chip: "Paused by you", row: "Paused by you" },
+    tripped: { chip: "Paused automatically", row: "Paused automatically" },
+  };
+
   /** Everything the chips, popover and Status tab show, derived from one status payload. */
   function statusModel(st) {
     const L = st.lutron || {}, lat = L.latency || {}, D = st.dmx || {}, rx = D.receiver || {};
@@ -174,7 +182,11 @@
     const d = st.driver || {};
     const srv = serverModel();
     const rate = Math.round(L.commands_per_s || 0);
-    const budget = D.enabled ? Number(D.max_commands_per_s) || 0 : 0;
+    const Pr = D.protect || {};
+    const protectOn = !!(D.enabled && Pr.enabled);
+    const cfgBudget = D.enabled ? Number(D.max_commands_per_s) || 0 : 0;
+    // with protection on, the limit shown is what the app allows right now
+    const budget = protectOn && Pr.rate ? (cfgBudget ? Math.min(cfgBudget, Math.round(Pr.rate)) : Math.round(Pr.rate)) : cfgBudget;
     const held = D.held_back || 0;
     const reconnecting = !st.connected && (L.reconnect_attempts || 0) > 0;
     const m = { chips: {}, sections: [], alerts: A, app, srv };
@@ -238,14 +250,24 @@
       let cls = held > 0 || (L.inflight || 0) > 10 ? "warn" : "ok";
       let title = "Commands sent to the Lutron system per second" + (budget ? ", against the limit set on the DMX tab" : "");
       if (held > 0) title += ". " + plural(held, "light") + " waiting for the limit.";
+      let value = budget ? rate + "/" + budget + " cmd/s" : rate + " cmd/s";
+      const prot = PROTECT_TEXT[Pr.state];
+      if (protectOn && (Pr.state === "backoff" || Pr.state === "hold")) { cls = "warn"; title = prot.chip + ". " + title; }
+      if (D.paused) { cls = "bad"; value = "paused"; title = Pr.reason || "DMX output is paused"; }
       if (!st.connected) cls = "off";
-      m.chips.out = { cls, value: budget ? rate + "/" + budget + " cmd/s" : rate + " cmd/s", title,
-        pct: budget ? Math.min(100, (rate / budget) * 100) : null, held };
-      m.sections.push({ id: "out", title: "Output to Lutron", cls, rows: [
+      m.chips.out = { cls, value, title, pct: budget && !D.paused ? Math.min(100, (rate / budget) * 100) : null, held };
+      const rows = [
         ["Commands/s", rate + (budget ? " of " + budget + " allowed" : ""), held > 0 ? "warn" : ""],
         ["Held back by the limit", held ? plural(held, "light") : "none", held ? "warn" : ""],
         ["Sent since start", Number(L.commands_total || 0).toLocaleString()],
-      ] });
+      ];
+      if (D.enabled) {
+        const text = prot ? prot.row : "";  // the banner carries the reason
+        if (!protectOn && !D.paused) rows.push(["Repeater protection", "Off (DMX tab)", "warn"]);
+        else if (text) rows.push(["Repeater protection", text, Pr.state === "ok" ? "ok" : Pr.state === "backoff" || Pr.state === "hold" ? "warn" : "bad"]);
+        if (protectOn && Pr.slowdowns) rows.push(["Slowed down since start", plural(Pr.slowdowns, "time"), "warn"]);
+      }
+      m.sections.push({ id: "out", title: "Output to Lutron", cls, rows });
     }
 
     // Alerts
@@ -300,12 +322,43 @@
     $("#driver-label").textContent = (KIND_NAMES[d.kind] || d.kind || "") + (d.host ? " · " + d.host : "") +
       (st.connected ? " · connected" : " · not connected");
     renderSetBanner(st.schedule_set);
+    renderProtect(st.dmx);
     renderUpdate(st.update);
     const banner = $("#error-banner");
     if (st.last_error) { banner.textContent = st.last_error; banner.classList.remove("hidden"); }
     else banner.classList.add("hidden");
     pushHistory(st);
     renderStatusArea();
+  }
+
+  /** The pause switch in the header, and the banner shown while DMX output is paused. */
+  function renderProtect(D) {
+    D = D || {};
+    const Pr = D.protect || {}, live = !!D.running, btn = $("#btn-dmx-pause"), bn = $("#protect-banner");
+    btn.classList.toggle("hidden", !live);
+    btn.textContent = D.paused ? "Resume DMX" : "Pause DMX";
+    btn.classList.toggle("danger", !D.paused);
+    btn.classList.toggle("primary", !!D.paused);
+    bn.classList.toggle("hidden", !(live && D.paused));
+    bn.classList.toggle("alert", !!Pr.auto);
+    if (live && D.paused) {
+      const text = $("#protect-banner-text");
+      clear(text);
+      text.appendChild(document.createTextNode(Pr.auto ? "DMX output was paused automatically: " + (Pr.reason || "storm detected")
+        : "DMX output is paused. Nothing from the DMX input reaches the lights."));
+      text.appendChild(h("small", { text: Pr.auto
+        ? "The lights keep their last levels. The Lutron repeater may still be working through commands it had already accepted: give it a minute, look at the latency on the Status tab, make sure the source is calm, then resume."
+        : "The input is still tracked. When you resume, the lights catch up to the current DMX values, starting slowly." }));
+    }
+  }
+
+  async function toggleDmxPause() {
+    const paused = !!(state.status && state.status.dmx && state.status.dmx.paused);
+    try {
+      await api("POST", "dmx/pause", { paused: !paused });
+      toast(paused ? "DMX resumed" : "DMX paused");
+      await loadStatus();
+    } catch (e) { toast(e.message, true); }
   }
 
   /** Repaint the header chips and, when visible, the popover and Status tab. */
@@ -1097,6 +1150,9 @@
     $("#dmx-bind").value = d.bind_ip || "";
     $("#dmx-rate").value = d.max_rate_hz;
     $("#dmx-total-rate").value = d.max_commands_per_s ?? 20;
+    $("#dmx-protect").checked = d.protect !== false;
+    $("#dmx-latency-limit").value = d.latency_limit_ms ?? 500;
+    $("#dmx-max-inflight").value = d.max_inflight ?? 40;
     updateSourceVisibility();
     renderMappings();
   }
@@ -1216,6 +1272,9 @@
       serial_port: $("#dmx-serial").value || "",
       max_rate_hz: Number($("#dmx-rate").value) || 5,
       max_commands_per_s: Math.max(0, Number($("#dmx-total-rate").value) || 0),
+      protect: $("#dmx-protect").checked,
+      latency_limit_ms: Math.min(10000, Math.max(50, Number($("#dmx-latency-limit").value) || 500)),
+      max_inflight: Math.max(0, Math.round(Number($("#dmx-max-inflight").value) || 0)),
       mappings: d.mappings.map((m) => ({ zone_id: m.zone_id, address: Number(m.address), params: m.params, enabled: !!m.enabled })),
     };
     if (body.source === "usb" && body.enabled && !body.serial_port) { toast("Choose a serial port for the USB adapter", true); return; }
@@ -1686,6 +1745,8 @@
     $("#btn-set-close").addEventListener("click", closeSetEditor);
     $("#btn-set-save").addEventListener("click", saveSet);
     $("#btn-set-restore").addEventListener("click", restoreSet);
+    $("#btn-dmx-pause").addEventListener("click", toggleDmxPause);
+    $("#btn-protect-resume").addEventListener("click", toggleDmxPause);
     $("#btn-set-details").addEventListener("click", () => showTab("schedules"));
 
     $("#dmx-source").addEventListener("change", updateSourceVisibility);

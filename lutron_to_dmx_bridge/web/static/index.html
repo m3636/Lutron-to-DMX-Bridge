@@ -24,6 +24,7 @@
       <button type="button" class="chip" id="chip-out" aria-haspopup="dialog" aria-expanded="false" title="Commands sent to the Lutron system"><i class="dot"></i><span class="k">Output</span><span class="v">-</span><span class="meter"><i></i></span><span class="held hidden"></span></button>
       <button type="button" class="chip" id="chip-alerts" aria-haspopup="dialog" aria-expanded="false" title="Warnings and errors since start"><i class="dot"></i><span class="k">Alerts</span><span class="v">-</span></button>
       <button type="button" class="chip" id="chip-server" aria-haspopup="dialog" aria-expanded="false" title="Connection between this browser and the app"><i class="dot"></i><span class="k">Server</span><span class="v">-</span></button>
+      <button type="button" class="btn danger hidden" id="btn-dmx-pause" title="Stop all DMX-driven commands to the Lutron system until you resume">Pause DMX</button>
     </div>
   </header>
 
@@ -39,6 +40,10 @@
   <div class="status-pop hidden" id="status-pop" role="dialog" aria-label="System status"></div>
 
   <div class="banner hidden" id="error-banner" role="alert"></div>
+  <div class="set-banner hidden" id="protect-banner" role="alert">
+    <span class="set-banner-text" id="protect-banner-text"></span>
+    <button class="btn primary" id="btn-protect-resume">Resume DMX</button>
+  </div>
   <div class="set-banner hidden" id="set-banner" role="status">
     <span class="set-banner-text" id="set-banner-text"></span>
     <button class="btn ghost" id="btn-set-details">Details</button>
@@ -163,7 +168,11 @@
           </label>
           <label>Max updates / second / zone <input type="number" id="dmx-rate" min="0.5" max="50" step="0.5"></label>
           <label>Max updates / second, all zones (0 = no limit) <input type="number" id="dmx-total-rate" min="0" max="1000" step="1"></label>
+          <label class="check"><input type="checkbox" id="dmx-protect"> Protect the repeater</label>
+          <label class="prot-only">Slow down above this Lutron latency, ms <input type="number" id="dmx-latency-limit" min="50" max="10000" step="50"></label>
+          <label class="prot-only">Max commands in flight (0 = no cap) <input type="number" id="dmx-max-inflight" min="0" max="500" step="1"></label>
         </div>
+        <p class="hint">Protect the repeater: the limit above is a ceiling. The app times a round trip to the Lutron system and slows down while it is behind, holds back what it sends while it is seconds behind, and pauses DMX output (with an alert) if the input floods or the repeater does not recover. The repeater keeps working through commands it has already accepted, so this is what keeps that backlog from forming.</p>
         <p class="hint usb-only" id="serial-note"></p>
         <p class="hint hidden" id="dmx-warnings" role="status"></p>
       </div>
