@@ -41,7 +41,7 @@ def make_config(tmp_path, kind="ra2") -> AppConfig:
                             leap_cert_dir=str(certdir)),
         scenes=[SceneConfig("s1", "Movie", {"z1": 10.0, "z2": 0.0}, 2.0), SceneConfig("s2", "Party", {"z1": 100.0})],
         dmx=DmxConfig(enabled=True, source="sacn", universe=3, bind_ip="192.168.1.9", serial_port="COM3",
-                      max_rate_hz=8.0, max_commands_per_s=30.0,
+                      max_rate_hz=8.0, max_commands_per_s=30.0, resolution_pct=2.0,
                       mappings=[DmxFixtureMapping("z1", 1, ["intensity", "on_off"]),
                                 DmxFixtureMapping("z2", 10, ["intensity"], enabled=False)]),
         schedule_sets=[ScheduleSetConfig("p1", "Performance mode", [ScheduleRef("s1", "Sunset")], [])],

@@ -154,6 +154,7 @@ class _Dmx(_M):
     serial_port: str = ""
     max_rate_hz: float = Field(default=5.0, gt=0, le=50)
     max_commands_per_s: float = Field(default=20.0, ge=0, le=1000)
+    resolution_pct: float = Field(default=0.5, ge=0.1, le=25)
     protect: bool = True
     latency_limit_ms: float = Field(default=500.0, ge=50, le=10000)
     max_inflight: int = Field(default=40, ge=0, le=500)
@@ -652,9 +653,11 @@ def describe_changes(config: AppConfig, parsed: ParsedImport, sections: list[str
         elif sec == "dmx":
             nd, cd = new.dmx, cur.dmx
             ch = _fields(cd, nd, ["enabled", "source", "universe", "bind_ip", "serial_port", "max_rate_hz",
-                                  "max_commands_per_s", "protect", "latency_limit_ms", "max_inflight"],
+                                  "max_commands_per_s", "resolution_pct", "protect", "latency_limit_ms",
+                                  "max_inflight"],
                          {"enabled": "DMX input", "bind_ip": "bind address", "serial_port": "serial port",
                           "max_rate_hz": "max rate per zone (Hz)", "max_commands_per_s": "max commands per second",
+                          "resolution_pct": "level step (%)",
                           "protect": "repeater protection", "latency_limit_ms": "latency limit (ms)",
                           "max_inflight": "max commands in flight"})
 

@@ -164,6 +164,9 @@ class DmxConfig:
     max_rate_hz: float = 5.0
     #: max commands per second sent to the Lutron system for all zones together (0 = no limit)
     max_commands_per_s: float = 20.0
+    #: level step in percent: a zone is only sent when its DMX value moved at least this far from the
+    #: last command, and above 0.5 the level sent is rounded to a multiple of it (0 and 100 stay exact)
+    resolution_pct: float = 0.5
     #: slow down when the Lutron system falls behind, cap commands in flight, and pause on a DMX storm
     #: (dmx/protect.py). Turn off only for a repeater you know can take the limit above.
     protect: bool = True

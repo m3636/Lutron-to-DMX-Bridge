@@ -1174,6 +1174,7 @@
     $("#dmx-bind").value = d.bind_ip || "";
     $("#dmx-rate").value = d.max_rate_hz;
     $("#dmx-total-rate").value = d.max_commands_per_s ?? 20;
+    $("#dmx-resolution").value = d.resolution_pct ?? 0.5;
     $("#dmx-protect").checked = d.protect !== false;
     $("#dmx-latency-limit").value = d.latency_limit_ms ?? 500;
     $("#dmx-max-inflight").value = d.max_inflight ?? 40;
@@ -1296,6 +1297,7 @@
       serial_port: $("#dmx-serial").value || "",
       max_rate_hz: Number($("#dmx-rate").value) || 5,
       max_commands_per_s: Math.max(0, Number($("#dmx-total-rate").value) || 0),
+      resolution_pct: Math.min(25, Math.max(0.1, Number($("#dmx-resolution").value) || 0.5)),
       protect: $("#dmx-protect").checked,
       latency_limit_ms: Math.min(10000, Math.max(50, Number($("#dmx-latency-limit").value) || 500)),
       max_inflight: Math.max(0, Math.round(Number($("#dmx-max-inflight").value) || 0)),
