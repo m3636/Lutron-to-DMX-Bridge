@@ -31,7 +31,7 @@ from lutron_to_dmx_bridge.dmx.engine import DmxEngine, auto_assign  # noqa: E402
 from lutron_to_dmx_bridge.drivers.ra2 import RA2Driver  # noqa: E402
 from lutron_to_dmx_bridge.models import Zone, ZoneType  # noqa: E402
 
-DUR = 10.0
+DUR = 10.0  # overridden by --duration
 
 
 class SlowRepeater(FakeRepeater):
@@ -64,7 +64,7 @@ class SlowRepeater(FakeRepeater):
             await writer.drain()
 
 
-async def main(n: int, service_ms: float, budget: float | None) -> None:
+async def main(n: int, service_ms: float, budget: float | None, extra_cfg: dict | None = None) -> None:
     rep = SlowRepeater(service_ms / 1000)
     await rep.start()
     cfg = AppConfig()
@@ -73,7 +73,9 @@ async def main(n: int, service_ms: float, budget: float | None) -> None:
     await drv.connect()
     zones = [Zone(id=str(i + 1), name=f"z{i}", type=ZoneType.DIMMER) for i in range(n)]
     drv._inventory.zones = zones
-    extra = {} if budget is None else {"max_commands_per_s": budget}
+    extra = dict(extra_cfg or {})
+    if budget is not None:
+        extra["max_commands_per_s"] = budget
     cfg.dmx = DmxConfig(enabled=True, mappings=auto_assign([z.id for z in zones]), **extra)
 
     class NoReceiver:
@@ -92,7 +94,8 @@ async def main(n: int, service_ms: float, budget: float | None) -> None:
     executed_at_end = len(rep.stamps)
     for _ in range(600):  # let the repeater work off whatever is still queued (max 60 s)
         await asyncio.sleep(0.1)
-        if len(rep.stamps) >= eng.commands_sent and time.monotonic() - ramp_end > 1:
+        if (len(rep.stamps) >= eng.commands_sent and not eng.held_back
+                and time.monotonic() - ramp_end > 1):
             break
 
     st = sorted(rep.stamps)
@@ -134,5 +137,14 @@ if __name__ == "__main__":
     ap.add_argument("--zones", type=int, default=82)
     ap.add_argument("--service-ms", type=float, default=0.0, help="repeater time per command")
     ap.add_argument("--budget", type=float, default=None, help="max_commands_per_s (default: app default)")
+    ap.add_argument("--duration", type=float, default=DUR, help="ramp length in seconds (default 10)")
+    ap.add_argument("--rate", type=float, default=None, help="max_rate_hz (default: app default)")
+    ap.add_argument("--step", type=float, default=None, help="dmx.resolution_pct, if the app has it")
     a = ap.parse_args()
-    asyncio.run(main(a.zones, a.service_ms, a.budget))
+    DUR = a.duration
+    cfg_extra = {}
+    if a.rate is not None:
+        cfg_extra["max_rate_hz"] = a.rate
+    if a.step is not None:
+        cfg_extra["resolution_pct"] = a.step
+    asyncio.run(main(a.zones, a.service_ms, a.budget, cfg_extra))

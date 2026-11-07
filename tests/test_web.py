@@ -294,6 +294,12 @@ def test_dmx_settings_and_helpers(ctx, home):
     r = client.put("/api/settings/dmx", json={**body, "max_commands_per_s": 8})
     assert r.status_code == 200 and ctl.config.dmx.max_commands_per_s == 8
     assert client.put("/api/settings/dmx", json={**body, "max_commands_per_s": -1}).status_code == 422
+    assert client.get("/api/settings/dmx").json()["resolution_pct"] == 0.5  # default: exact levels
+    r = client.put("/api/settings/dmx", json={**body, "resolution_pct": 2})
+    assert r.status_code == 200 and ctl.config.dmx.resolution_pct == 2
+    assert client.get("/api/settings/dmx").json()["resolution_pct"] == 2
+    for bad in (0, -1, 50):
+        assert client.put("/api/settings/dmx", json={**body, "resolution_pct": bad}).status_code == 422
 
     mon = client.get("/api/dmx/monitor").json()
     assert mon["channel_map"]["10"] == {"zone_id": "z1", "param": "intensity"}

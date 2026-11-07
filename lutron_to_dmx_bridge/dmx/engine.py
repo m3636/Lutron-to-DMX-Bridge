@@ -15,7 +15,10 @@ Sending policy (Lutron systems handle a few commands per second per zone,
 not 44 Hz DMX):
 
 * Zones are only sent when their target differs from the last value *we*
-  sent by at least DEADBAND percent (a full 0 or 100 always goes through).
+  sent by at least the level step (``config.dmx.resolution_pct``, default
+  DEADBAND = 0.5 percent; a full 0 or 100 always goes through). A step above
+  DEADBAND also rounds each level sent to a multiple of the step (0 and 100
+  stay exact), so a coarse step turns a smooth ramp into fewer, larger moves.
 * Each zone is rate limited to ``config.dmx.max_rate_hz``.
 * All zones together are limited to ``config.dmx.max_commands_per_s`` (a token
   bucket). A RadioRA 2 repeater works through its telnet commands one after
@@ -58,7 +61,7 @@ if TYPE_CHECKING:  # pragma: no cover
 log = logging.getLogger(__name__)
 
 SUPPORTED_PARAMS = ("intensity", "on_off", "fade")
-DEADBAND = 0.5  # percent
+DEADBAND = 0.5  # percent: the default level step, and the smallest one that rounds levels
 SETTLE_TIME = 0.3  # s a sub-deadband change must be stable before it's sent
 TICK = 0.05  # s, trailing-edge flush period
 FPS_WINDOW = 1.0  # s
@@ -230,6 +233,23 @@ class DmxEngine:
         rate = self.config.max_rate_hz or 0
         return 1.0 / rate if rate > 0 else 0.0
 
+    def _step(self) -> float:
+        """Level step in percent: smallest DMX change worth a command (and the rounding grid)."""
+        step = float(getattr(self.config, "resolution_pct", DEADBAND) or 0)
+        return step if step > 0 else DEADBAND
+
+    def _snap(self, level: float) -> float:
+        """Round `level` to the level step. Off, full and anything in between stay put:
+        a light that is not off never rounds down to off, nor up to full."""
+        step = self._step()
+        if step <= DEADBAND or level <= 0.0 or level >= 100.0:
+            return level
+        snapped = round(level / step) * step
+        top = (100.0 // step) * step
+        if top >= 100.0:  # the step divides 100 evenly: keep one grid point below full
+            top -= step
+        return round(min(max(snapped, step), top), 2)
+
     def _budget(self) -> float:
         """Commands per second across all zones (0 = unlimited)."""
         return float(getattr(self.config, "max_commands_per_s", 0) or 0)
@@ -344,8 +364,8 @@ class DmxEngine:
             if st.target is None:
                 continue
             if st.sent is not None:
-                if abs(st.target - st.sent) < 1e-6:
-                    continue
+                if abs(self._snap(st.target) - st.sent) < 1e-6:
+                    continue  # the light is already where this DMX value would put it
                 ref = st.sent if st.sent_target is None else st.sent_target
                 if (abs(st.target - ref) < RAMP_STEP
                         and now - st.run_started_at < RAMP_HOLD - 1e-9):
@@ -356,7 +376,7 @@ class DmxEngine:
                         and now - st.last_send < RESEND_FRACTION * st.plan_fade
                         and abs(st.target - (st.light_at(now) or 0.0)) <= TRACK_ERROR):
                     continue  # the light is still gliding where we sent it
-                big_enough = (abs(st.target - ref) >= DEADBAND or st.target in (0.0, 100.0)
+                big_enough = (abs(st.target - ref) >= self._step() - 1e-9 or st.target in (0.0, 100.0)
                               or settled)
                 if not big_enough:
                     continue
@@ -403,10 +423,10 @@ class DmxEngine:
         command lands.
         """
         if fade is not None:
-            return target, fade
+            return self._snap(target), fade
         st = self._zones[zone_id]
         if not st.smooth or st.ramp_run < RAMP_MIN_RUN:
-            return target, None
+            return self._snap(target), None
         level = target
         if st.sent_target is not None and st.last_send >= st.run_started_at:
             ref_t, ref_level = st.last_send, st.sent_target
@@ -419,7 +439,7 @@ class DmxEngine:
             if slope and level in (0.0, 100.0) and abs(level - target) < abs(slope) * glide:
                 # The ramp reaches the end of the range inside this fade: arrive on time.
                 glide = round(max(SMOOTH_MIN_FADE, abs(level - target) / abs(slope)), 1)
-        return round(level, 2), glide
+        return round(self._snap(level), 2), glide
 
     async def flush(self, now: float | None = None) -> int:
         """Send every zone that is due. Returns the number of zones sent."""
@@ -516,6 +536,7 @@ class DmxEngine:
             "held_back": self.held_back,
             "max_rate_hz": cfg.max_rate_hz,
             "max_commands_per_s": cfg.max_commands_per_s,
+            "resolution_pct": cfg.resolution_pct,
             "mapped_zones": len(self._zones),
             "receiver": self.receiver.info() if self.receiver is not None and hasattr(self.receiver, "info") else {},
         }

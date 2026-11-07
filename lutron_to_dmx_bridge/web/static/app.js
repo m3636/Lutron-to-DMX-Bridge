@@ -1093,6 +1093,7 @@
     $("#dmx-bind").value = d.bind_ip || "";
     $("#dmx-rate").value = d.max_rate_hz;
     $("#dmx-total-rate").value = d.max_commands_per_s ?? 20;
+    $("#dmx-resolution").value = d.resolution_pct ?? 0.5;
     updateSourceVisibility();
     renderMappings();
   }
@@ -1212,6 +1213,7 @@
       serial_port: $("#dmx-serial").value || "",
       max_rate_hz: Number($("#dmx-rate").value) || 5,
       max_commands_per_s: Math.max(0, Number($("#dmx-total-rate").value) || 0),
+      resolution_pct: Math.min(25, Math.max(0.1, Number($("#dmx-resolution").value) || 0.5)),
       mappings: d.mappings.map((m) => ({ zone_id: m.zone_id, address: Number(m.address), params: m.params, enabled: !!m.enabled })),
     };
     if (body.source === "usb" && body.enabled && !body.serial_port) { toast("Choose a serial port for the USB adapter", true); return; }

@@ -674,3 +674,64 @@ async def test_engine_reports_held_back_zones_and_command_rate():
     assert eng.held_back == 0
     assert eng.commands.total == eng.commands_sent
     assert "commands_per_s" in eng.status()
+
+
+# ---------------------------------------------------------------------------
+# Level step (dmx.resolution_pct)
+# ---------------------------------------------------------------------------
+def step_engine(step, zones=("a",)):
+    eng, drv = make_engine(auto_assign(list(zones)), rate=50.0, zones=zones)
+    eng.config.resolution_pct = step
+    eng._init_zone_states()
+    return eng, drv
+
+
+def test_snap_rounds_to_the_step_but_keeps_off_full_and_dim():
+    eng, _ = step_engine(5.0)
+    assert [eng._snap(x) for x in (0.0, 100.0)] == [0.0, 100.0]
+    assert eng._snap(12.4) == 10.0 and eng._snap(12.6) == 15.0
+    assert eng._snap(1.0) == 5.0, "a light that is on never rounds down to off"
+    assert eng._snap(99.0) == 95.0, "and never rounds up to full"
+    eng.config.resolution_pct = 3.0  # does not divide 100: the top grid point is 99
+    assert eng._snap(98.9) == 99.0 and eng._snap(100.0) == 100.0
+    eng.config.resolution_pct = DEADBAND  # the default sends exact levels
+    assert eng._snap(33.33) == 33.33
+    eng.config.resolution_pct = 0  # a bad value falls back to the default
+    assert eng._step() == DEADBAND and eng._snap(33.33) == 33.33
+
+
+async def test_coarse_step_sends_fewer_commands_with_hysteresis():
+    exact, drv_exact = step_engine(DEADBAND)
+    coarse, drv_coarse = step_engine(5.0)
+    for eng in (exact, coarse):
+        for i in range(101):  # a 4 s fader move, 0 -> 100 %, at 25 fps
+            t = 10.0 + i * 0.04
+            eng.process_frame(frame(c1=round(255 * i / 100)), t)
+            await eng.flush(t)
+        for k in range(200):  # let anything pending finish
+            await eng.flush(15.0 + k * 0.05)
+    assert len(drv_coarse.calls) < len(drv_exact.calls) / 2
+    assert len(drv_coarse.calls) >= 8, "still a usable ramp"
+    sent = [next(iter(c[1].values())) for c in drv_coarse.calls]
+    assert sent[-1] == 100.0, "the final level is exact"
+    assert all(lvl == 100.0 or lvl % 5.0 == 0 for lvl in sent), sent  # every level is on the grid
+
+
+async def test_jitter_inside_the_step_sends_nothing_and_settles_to_the_grid():
+    eng, drv = step_engine(5.0)
+    eng.process_frame(frame(c1=128), 0.0)  # 50.2 %
+    for _ in range(20):
+        await eng.flush(5.0)
+    n = len(drv.calls)
+    assert n >= 1 and next(iter(drv.calls[-1][1].values())) == 50.0
+    for i, v in enumerate((126, 129, 127, 130, 128, 131, 125)):  # +-1 % noise on the fader
+        eng.process_frame(frame(c1=v), 10.0 + i * 0.05)
+        await eng.flush(10.0 + i * 0.05)
+    for k in range(40):
+        await eng.flush(11.0 + k * 0.05)
+    assert len(drv.calls) == n, "noise smaller than the step costs no commands"
+
+
+def test_resolution_default_and_old_configs():
+    cfg = AppConfig.from_dict({"dmx": {"enabled": True}})
+    assert cfg.dmx.resolution_pct == DEADBAND

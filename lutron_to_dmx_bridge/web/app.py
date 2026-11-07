@@ -107,6 +107,7 @@ class DmxSettingsBody(BaseModel):
     serial_port: str = ""
     max_rate_hz: float = Field(default=5.0, gt=0, le=50)
     max_commands_per_s: float = Field(default=20.0, ge=0, le=1000)
+    resolution_pct: float = Field(default=0.5, ge=0.1, le=25)
     mappings: list[MappingBody] = Field(default_factory=list)
 
 
@@ -651,7 +652,7 @@ def create_app(controller, discover=None, updater: Updater | None = None, bind_h
             enabled=body.enabled, source=body.source, universe=body.universe,
             bind_ip=body.bind_ip.strip() or "0.0.0.0", serial_port=body.serial_port.strip(),
             max_rate_hz=body.max_rate_hz, max_commands_per_s=body.max_commands_per_s,
-            mappings=mappings,
+            resolution_pct=body.resolution_pct, mappings=mappings,
         )
         controller.save()
         warning = None
