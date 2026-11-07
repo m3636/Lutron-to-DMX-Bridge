@@ -25,7 +25,8 @@ def test_rate_window_add_many_at_once():
 
 def test_latency_stats_median_p95_and_window():
     s = LatencyStats(window=10.0)
-    assert s.snapshot(0.0) == {"last": None, "age_s": None, "median": None, "p95": None, "count": 0}
+    assert s.snapshot(0.0) == {"last": None, "age_s": None, "median": None, "p95": None, "count": 0,
+                                "history": []}
     for i, ms in enumerate([10, 20, 30, 40, 1000]):
         s.add(ms, now=float(i))
     snap = s.snapshot(5.0)
@@ -34,6 +35,17 @@ def test_latency_stats_median_p95_and_window():
     # An hour later nothing is recent, but the last value is still reported.
     old = s.snapshot(3600.0)
     assert old["count"] == 0 and old["median"] is None and old["last"] == 1000 and old["age_s"] > 3000
+
+
+def test_latency_history_is_oldest_first_and_limited_to_its_span():
+    s = LatencyStats(window=10.0, history=30.0)
+    s.add(11.4, now=0.0)
+    s.add(22.0, now=50.0)
+    s.add(33.0, now=60.0)
+    snap = s.snapshot(62.0)
+    # [age in seconds, ms]; the sample from 62 s ago is outside the 30 s span, though it is still the oldest kept
+    assert snap["history"] == [[12.0, 22.0], [2.0, 33.0]]
+    assert s.snapshot(200.0)["history"] == []
 
 
 def test_driver_metrics_reconnect_bookkeeping():

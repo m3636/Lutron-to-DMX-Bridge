@@ -256,13 +256,45 @@ async def test_reconnects_after_drop(driver, repeater):
     await repeater.wait_for(lambda: driver.zone("40").level == 5)
 
 
-async def test_keepalive(repeater):
-    d = RA2Driver(make_config(repeater.port), keepalive_interval=0.05, connect_timeout=2)
+async def test_probe_doubles_as_keepalive(repeater):
+    d = RA2Driver(make_config(repeater.port), probe_interval=0.05, connect_timeout=2)
     await d.connect()
     try:
         await repeater.wait_for(lambda: "?SYSTEM,1" in repeater.commands)
     finally:
         await d.close()
+
+
+async def test_probe_round_trip_is_recorded_as_latency_even_when_idle(repeater):
+    d = RA2Driver(make_config(repeater.port), probe_interval=0.05, connect_timeout=2)
+    await d.connect()
+    try:
+        # no level command is ever sent: the graph must still get samples
+        await repeater.wait_for(lambda: d.link_status()["latency"]["count"] >= 3)
+        lat = d.link_status()["latency"]
+        assert lat["last"] is not None and lat["last"] < 1000
+        assert len(lat["history"]) >= 3 and all(ms >= 0 for _, ms in lat["history"])
+        assert d.link_status()["commands_total"] == 0  # probes are not level commands
+    finally:
+        await d.close()
+
+
+async def test_probe_replies_pair_first_in_first_out(driver):
+    driver.metrics.latency = type(driver.metrics.latency)()
+    t = time.monotonic()
+    driver._probes_sent.extend([t - 0.30, t - 0.10])
+    await driver._handle_line("GNET> ~SYSTEM,1,12:00:00")
+    await driver._handle_line("~SYSTEM,1,12:00:01")
+    hist = [ms for _, ms in driver.link_status()["latency"]["history"]]
+    assert len(hist) == 2 and 290 <= hist[0] <= 400 and 90 <= hist[1] <= 200
+    await driver._handle_line("~SYSTEM,1,12:00:02")  # a reply nobody is waiting for is ignored
+    assert driver.link_status()["latency"]["count"] == 2
+
+
+async def test_probes_waiting_too_long_are_forgotten_when_the_next_one_is_sent(driver):
+    driver._probes_sent.append(time.monotonic() - 60)  # its reply was lost
+    await driver._send("?SYSTEM,1")
+    assert len(driver._probes_sent) == 1
 
 
 async def test_backup(driver):
@@ -326,7 +358,7 @@ async def test_dmx_ramp_over_telnet_is_budgeted_and_pipelined(driver, repeater):
     assert ramp and all(0 < float(c[4]) <= 5 for c in ramp)  # fade given in seconds
 
 
-async def test_link_metrics_count_commands_and_echo_latency(driver, repeater):
+async def test_link_metrics_count_commands_and_clear_inflight_on_echo(driver, repeater):
     await repeater.wait_for(lambda: "?TIMECLOCK,70,6,3" in repeater.commands)
     base = driver.link_status()
     assert base["connected_for_s"] is not None and base["inflight"] == 0
@@ -335,7 +367,6 @@ async def test_link_metrics_count_commands_and_echo_latency(driver, repeater):
     st = driver.link_status()
     assert st["commands_total"] - base["commands_total"] == 2
     assert st["commands_per_s"] >= 2
-    assert st["echo"]["count"] >= 2 and st["echo"]["last"] is not None
     assert st["inflight"] == 0  # both were echoed
 
 

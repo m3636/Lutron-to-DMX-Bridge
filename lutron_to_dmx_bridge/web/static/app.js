@@ -112,7 +112,7 @@
     wsFailed: false,         // the websocket closed at least once
     msgAt: 0,                // when the last websocket message arrived
     statusAt: 0,             // when the last status arrived (websocket or polling)
-    hist: { fps: [], cps: [], echo: [] },  // [ms timestamp, value|null] pairs, last HISTORY_S seconds
+    hist: { fps: [], cps: [], latency: [] },  // [ms timestamp, value|null] pairs, last HISTORY_S seconds (latency comes from the app)
     pop: false,              // status popover open
     tab: "devices",
   };
@@ -134,10 +134,11 @@
 
   // ---------------------------------------------------------------- status
   const KIND_NAMES = { simulator: "Simulator", ra2: "RadioRA 2", leap: "LEAP" };
-  const SLOW_ECHO_MS = 500;      // p95 echo latency above this turns the Lutron chip amber
+  const SLOW_LUTRON_MS = 500;    // p95 round-trip latency above this turns the Lutron chip amber
   const STALE_DMX_S = 2;         // no DMX packet for this long turns the DMX chip amber
   const STALE_MSG_MS = 4000;     // the app pushes status every second; this many ms of silence is "stale"
   const HISTORY_S = 120;
+  const LATENCY_GAP_MS = 8000;   // latency samples further apart than this are drawn as separate lines
 
   function fmtDur(s) {
     s = Math.max(0, Math.round(s));
@@ -168,7 +169,7 @@
 
   /** Everything the chips, popover and Status tab show, derived from one status payload. */
   function statusModel(st) {
-    const L = st.lutron || {}, echo = L.echo || {}, D = st.dmx || {}, rx = D.receiver || {};
+    const L = st.lutron || {}, lat = L.latency || {}, D = st.dmx || {}, rx = D.receiver || {};
     const A = st.alerts || { warnings: 0, errors: 0, recent: [] }, app = st.app || {};
     const d = st.driver || {};
     const srv = serverModel();
@@ -180,10 +181,10 @@
 
     // Lutron
     {
-      let cls = "ok", value = echo.count ? echo.median + " ms" : "connected";
-      let title = "Connected to the Lutron system" + (echo.count ? ". Median echo latency over the last minute." : ". No commands in the last minute.");
+      let cls = "ok", value = lat.count ? lat.median + " ms" : "connected";
+      let title = "Connected to the Lutron system" + (lat.count ? ". Median round-trip latency over the last minute." : ". No latency measured yet.");
       if (!st.connected) { cls = "bad"; value = "offline"; title = reconnecting ? "Reconnecting to the Lutron system" : "Not connected to the Lutron system"; }
-      else if (echo.p95 >= SLOW_ECHO_MS) { cls = "warn"; title = "The repeater is slow to answer (95th percentile " + echo.p95 + " ms)"; }
+      else if (lat.p95 >= SLOW_LUTRON_MS) { cls = "warn"; title = "The repeater is slow to answer (95th percentile " + lat.p95 + " ms)"; }
       m.chips.lutron = { cls, value, title };
       const rows = [
         ["State", st.connected ? "Connected" : reconnecting
@@ -193,9 +194,9 @@
       ];
       if (st.connected && L.connected_for_s != null) rows.push(["Connected for", fmtDur(L.connected_for_s)]);
       if (L.reconnects) rows.push(["Reconnects since start", String(L.reconnects), "warn"]);
-      rows.push(["Echo latency",
-        echo.count ? fmtMs(echo.last) + " (median " + fmtMs(echo.median) + ", p95 " + fmtMs(echo.p95) + ")" : "no replies in the last minute",
-        echo.p95 >= SLOW_ECHO_MS ? "warn" : ""]);
+      rows.push(["Lutron latency",
+        lat.count ? fmtMs(lat.last) + " (median " + fmtMs(lat.median) + ", p95 " + fmtMs(lat.p95) + ")" : "no replies in the last minute",
+        lat.p95 >= SLOW_LUTRON_MS ? "warn" : ""]);
       rows.push(["Commands in flight", String(L.inflight || 0), (L.inflight || 0) > 10 ? "warn" : ""]);
       m.sections.push({ id: "lutron", title: "Lutron link", cls, rows });
     }
@@ -325,7 +326,7 @@
     const now = Date.now();
     if (now - (state.histAt || 0) < 700) return;  // a manual refresh next to a push must not double up
     state.histAt = now;
-    const L = st.lutron || {}, e = L.echo || {}, D = st.dmx || {};
+    const L = st.lutron || {}, D = st.dmx || {};
     const add = (k, v) => {
       const a = state.hist[k];
       a.push([now, v]);
@@ -333,7 +334,9 @@
     };
     add("fps", D.running ? D.fps || 0 : null);
     add("cps", st.connected ? L.commands_per_s || 0 : null);
-    add("echo", e.age_s !== null && e.age_s !== undefined && e.age_s <= 2 ? e.last : null);  // gaps while idle
+    // Round-trip samples are timed by the app (one every couple of seconds, busy or idle), so take its
+    // history as it is instead of sampling the latest value once a second.
+    state.hist.latency = ((L.latency || {}).history || []).map(([age, ms]) => [now - age * 1000, ms]);
   }
 
   function dlRows(rows) {
@@ -377,7 +380,7 @@
   }
 
   /** One sparkline: samples are [ms, value|null]; x is time over the last HISTORY_S seconds, y is 0..max. */
-  function sparkSvg(samples, max, color, limit) {
+  function sparkSvg(samples, max, color, limit, gap) {
     const W = 300, H = 72, padT = 6, padB = 4, now = Date.now(), span = HISTORY_S * 1000;
     const X = (t) => ((t - (now - span)) / span) * W;
     const Y = (v) => padT + (1 - Math.min(v, max) / max) * (H - padT - padB);
@@ -394,7 +397,7 @@
     let prev = null, cur = null;
     for (const [t, v] of samples) {
       if (v === null || v === undefined) { prev = null; cur = null; continue; }
-      if (prev === null || t - prev > 3000) { cur = []; segs.push(cur); }
+      if (prev === null || t - prev > (gap || 3000)) { cur = []; segs.push(cur); }
       cur.push([X(t), Y(v)]);
       prev = t;
     }
@@ -407,7 +410,7 @@
       svg += '<path d="M' + pts.join(" L") + '" fill="none" style="stroke:' + color + '" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>';
     }
     const lastSample = samples[samples.length - 1];
-    if (lastSample && lastSample[1] !== null && lastSample[1] !== undefined && now - lastSample[0] <= 3000) {
+    if (lastSample && lastSample[1] !== null && lastSample[1] !== undefined && now - lastSample[0] <= (gap || 3000)) {
       svg += '<circle cx="' + X(lastSample[0]).toFixed(1) + '" cy="' + Y(lastSample[1]).toFixed(1) + '" r="3.2" style="fill:' + color + '"/>';
     }
     const holder = h("div");
@@ -415,8 +418,8 @@
     return holder.firstChild;
   }
 
-  function graphCard(title, big, unit, samples, max, color, maxUnit, limit) {
-    const svg = sparkSvg(samples, max, color, limit);
+  function graphCard(title, big, unit, samples, max, color, maxUnit, limit, gap) {
+    const svg = sparkSvg(samples, max, color, limit, gap);
     svg.setAttribute("aria-label", title + " over the last 2 minutes");
     return h("div", { class: "card" }, h("h3", { text: title }),
       h("div", { class: "big" }, big, h("small", { text: unit })), svg,
@@ -426,7 +429,7 @@
   function renderStatusTab(m) {
     if (!state.status) return;
     m = m || statusModel(state.status);
-    const st = state.status, L = st.lutron || {}, e = L.echo || {}, D = st.dmx || {};
+    const st = state.status, L = st.lutron || {}, lat = L.latency || {}, D = st.dmx || {};
     const budget = D.enabled ? Number(D.max_commands_per_s) || 0 : 0;
 
     const secs = $("#status-sections");
@@ -442,8 +445,9 @@
       state.hist.fps, niceMax(peak("fps"), 50), "var(--dmx)", "frames/s"));
     g.appendChild(graphCard("Commands to Lutron", String(Math.round(L.commands_per_s || 0)), budget ? "cmd/s, limit " + budget : "cmd/s",
       state.hist.cps, niceMax(Math.max(peak("cps"), budget * 1.25), 10), "var(--accent)", "cmd/s", budget || null));
-    g.appendChild(graphCard("Echo latency", e.last === null || e.last === undefined ? "-" : String(e.last), "ms" + (e.count ? " · median " + e.median + ", p95 " + e.p95 : ""),
-      state.hist.echo, niceMax(peak("echo"), 200), "var(--ok)", "ms"));
+    // the app times a round trip to the Lutron system every couple of seconds; a few missed ones still join up
+    g.appendChild(graphCard("Lutron latency", lat.last === null || lat.last === undefined ? "-" : String(lat.last), "ms" + (lat.count ? " · median " + lat.median + ", p95 " + lat.p95 : ""),
+      state.hist.latency, niceMax(peak("latency"), 200), "var(--ok)", "ms", SLOW_LUTRON_MS, LATENCY_GAP_MS));
 
     const A = m.alerts, list = $("#status-log");
     clear(list);

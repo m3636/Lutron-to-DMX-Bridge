@@ -78,9 +78,11 @@ def inventory_from_dict(raw: dict[str, Any]) -> SystemInventory:
 class SimulatorDriver(LutronDriver):
     system_name = "Simulator"
 
-    #: pretend echo latency in ms (base, plus up to ECHO_JITTER_MS of jitter) so the status area has numbers to show
-    ECHO_BASE_MS = 40.0
-    ECHO_JITTER_MS = 20.0
+    #: pretend round-trip latency in ms (base, plus up to LATENCY_JITTER_MS of jitter, one sample every
+    #: LATENCY_INTERVAL seconds like the real driver's probe) so the status area has numbers to show
+    LATENCY_BASE_MS = 40.0
+    LATENCY_JITTER_MS = 20.0
+    LATENCY_INTERVAL = 2.0
 
     def __init__(self, config: Any = None, *, fade_step: float = FADE_STEP) -> None:
         super().__init__()
@@ -91,15 +93,27 @@ class SimulatorDriver(LutronDriver):
         self._inventory = inventory_from_dict(self._raw)
         self._connected = False
         self._fades: dict[str, asyncio.Task[None]] = {}
+        self._probe_task: asyncio.Task[None] | None = None
 
     # -- lifecycle -------------------------------------------------------
     async def connect(self) -> None:
         self._connected = True
         self.metrics.mark_connected()
+        if self._probe_task is None or self._probe_task.done():
+            self._probe_task = asyncio.create_task(self._probe_loop())
+
+    async def _probe_loop(self) -> None:
+        while True:
+            self.metrics.latency.add(self.LATENCY_BASE_MS + self._jitter.random() * self.LATENCY_JITTER_MS)
+            await asyncio.sleep(self.LATENCY_INTERVAL)
 
     async def close(self) -> None:
         self._connected = False
         self.metrics.mark_disconnected()
+        probe, self._probe_task = self._probe_task, None
+        if probe is not None:
+            probe.cancel()
+            await asyncio.gather(probe, return_exceptions=True)
         tasks = list(self._fades.values())
         self._fades.clear()
         for t in tasks:
@@ -124,7 +138,6 @@ class SimulatorDriver(LutronDriver):
     async def set_level(self, zone_id: str, level: float, fade: float | None = None) -> None:
         zone = self._require_zone(zone_id)
         self.metrics.commands.add()
-        self.metrics.echo.add(self.ECHO_BASE_MS + self._jitter.random() * self.ECHO_JITTER_MS)
         target = max(0.0, min(100.0, float(level)))
         if zone.type is ZoneType.SWITCH:
             target = 100.0 if target > 0 else 0.0
