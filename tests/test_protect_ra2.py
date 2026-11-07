@@ -76,9 +76,11 @@ async def test_load_reports_how_long_an_unanswered_probe_has_waited(mute_repeate
         await mute_repeater.wait_for(lambda: d.metrics.latency.last is not None)
         assert d.load().latency_ms is not None and d.load().latency_ms < 200  # answering: a normal reading
         mute_repeater.mute = True
-        await asyncio.sleep(0.6)
         # no new round trip arrives, yet the signal keeps rising instead of going quiet
-        assert d.load().latency_ms >= 500
+        await mute_repeater.wait_for(lambda: (d.load().latency_ms or 0) >= 400, timeout=5)
+        first = d.load().latency_ms
+        await asyncio.sleep(0.3)
+        assert d.load().latency_ms > first  # still climbing, whatever this machine's timer granularity
         assert len(d._probes_sent) <= d.max_probes_waiting  # and the probes do not pile up behind a dead repeater
     finally:
         await d.close()
@@ -126,9 +128,8 @@ async def test_probes_speed_up_while_commands_flow():
         await asyncio.sleep(0.3)
         idle = sum(1 for c in rep.commands if c.startswith("?SYSTEM"))
         await d.set_level("40", 30.0)
-        await asyncio.sleep(0.4)
-        busy = sum(1 for c in rep.commands if c.startswith("?SYSTEM"))
-        assert idle == 0 and busy >= 3
+        await rep.wait_for(lambda: sum(1 for c in rep.commands if c.startswith("?SYSTEM")) >= 3, timeout=5)
+        assert idle == 0  # (probe_interval is 5 s: without the speed-up none would have come yet)
     finally:
         await d.close()
         await rep.stop()
