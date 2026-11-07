@@ -989,10 +989,11 @@ def test_without_an_updater_the_app_stays_offline(home):
 def test_the_gui_has_the_banner_and_settings(web):
     client, _, _ = web
     html = client.get("/").text
-    for el in ("update-banner", "btn-update-now", "btn-update-dismiss", "btn-update-check", "upd-check", "upd-token"):
+    for el in ("update-banner", "btn-update-now", "btn-update-dismiss", "btn-update-check", "upd-check", "upd-token",
+               "btn-update-settings-now", "update-action-why"):
         assert f'id="{el}"' in html
     js = client.get("/static/app.js").text
-    assert "renderUpdate" in js and "update/apply" in js
+    assert "renderUpdate" in js and "renderUpdateAction" in js and "update/apply" in js
 
 
 # ---------------------------------------------------------------------------
