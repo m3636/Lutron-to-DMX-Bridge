@@ -292,7 +292,7 @@ async def test_probe_replies_pair_first_in_first_out(driver):
 
 
 async def test_probes_waiting_too_long_are_forgotten_when_the_next_one_is_sent(driver):
-    driver._probes_sent.append(time.monotonic() - 60)  # its reply was lost
+    driver._probes_sent.append(time.monotonic() - driver.probe_expiry - 1)  # its reply was lost
     await driver._send("?SYSTEM,1")
     assert len(driver._probes_sent) == 1
 
